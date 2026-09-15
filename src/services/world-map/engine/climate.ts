@@ -1,0 +1,570 @@
+/**
+ * 气候系统：温度、降水量、生态群落
+ * 接入风场、洋流、雨影效应
+ * 使用空间网格索引避免 O(n²) 循环
+ */
+
+import type { GridCells, BiomeDef, WindData, OceanCurrent, MapRealism } from './types'
+
+const SEA_LEVEL = 20
+const TROPIC_NORTH = 16
+const TROPIC_SOUTH = -20
+const TROPICAL_GRADIENT = 0.15
+const TEMPERATURE_EQUATOR = 27
+const TEMPERATURE_NORTH_POLE = -30
+const TEMPERATURE_SOUTH_POLE = -30
+const HEIGHT_EXPONENT = 2
+
+/** 生态群落定义 — 标准等高线地形图配色 */
+export const BIOMES: BiomeDef[] = [
+  { id: 0, name: '海洋',       color: '#7fb5ca', habitability: 0,   moveCost: 10 },
+  { id: 1, name: '热带沙漠',   color: '#d1bf88', habitability: 4,   moveCost: 200 },
+  { id: 2, name: '寒带荒漠',   color: '#b8c0b8', habitability: 10,  moveCost: 150 },
+  { id: 3, name: '热带草原',   color: '#b5c887', habitability: 22,  moveCost: 60 },
+  { id: 4, name: '温带草原',   color: '#9fb979', habitability: 30,  moveCost: 50 },
+  { id: 5, name: '热带季风林', color: '#7ea46a', habitability: 50,  moveCost: 70 },
+  { id: 6, name: '温带落叶林', color: '#688e60', habitability: 100, moveCost: 70 },
+  { id: 7, name: '热带雨林',   color: '#537b59', habitability: 80,  moveCost: 80 },
+  { id: 8, name: '温带雨林',   color: '#496f53', habitability: 90,  moveCost: 90 },
+  { id: 9, name: '针叶林',     color: '#586f50', habitability: 12,  moveCost: 200 },
+  { id: 10, name: '苔原',      color: '#c2cbc2', habitability: 4,   moveCost: 1000 },
+  { id: 11, name: '冰川',      color: '#d8e3e3', habitability: 0,   moveCost: 5000 },
+  { id: 12, name: '湿地',      color: '#7d9f91', habitability: 12,  moveCost: 150 },
+]
+
+/**
+ * 生态群落查找矩阵
+ * 行: 湿润度 (0=干燥, 4=湿润)
+ * 列: 温度 (0=热, 25=冷)
+ */
+const BIOME_MATRIX: number[][] = [
+  [1, 1, 1, 1, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 10, 10, 10, 10, 10, 10, 10, 11, 11, 11, 11],
+  [3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 9, 9, 9, 9, 10, 10, 10, 10, 10, 10, 11, 11, 11, 11],
+  [5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 9, 9, 9, 9, 9, 10, 10, 10, 10, 11, 11, 11, 11],
+  [5, 5, 7, 7, 7, 7, 6, 6, 6, 6, 6, 8, 8, 8, 9, 9, 9, 9, 9, 10, 10, 10, 11, 11, 11, 11],
+  [7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 9, 9, 9, 9, 9, 10, 10, 10, 11, 11, 11, 11],
+]
+
+// ── 相干空间噪声（P0 de-banding） ────────────────────
+//
+// 旧 climate 把温度/降水绑死在纬度条带上（每个纬度一个值，整行同温/同雨），
+// 视觉上呈现为水平条带。这里加一个 inline value-noise：整数格点 hash +
+// smoothstep 双线性插值，输出在空间上**连续**（相邻 cell 相关），且**不**
+// 消费 rng/alea（同 seed 同输入 → 同输出，确定性）。rng()/alea 产生的是
+// 白噪声（cell 间无关），无法用来"打破条带"。
+//
+// 用法：sampleClimateNoise(noise, x/width, y/height) → [-1, 1]。
+// 频率由内部 FEATURE_SCALE 控制（~3-4 个特征横跨整图）。
+
+const CLIMATE_NOISE_FEATURE_SCALE = 3.5
+const CLIMATE_NOISE_SEED = 1337 // 稳定 hash salt；不改 seed 派生以保持确定性
+
+/** 整数格点 hash → [0,1)。来自 heightmap-template-aware.ts::hash2D 同思路。 */
+function climateHash2D(ix: number, iy: number): number {
+  const s = Math.sin(ix * 12.9898 + iy * 78.233 + CLIMATE_NOISE_SEED) * 43758.5453
+  return s - Math.floor(s)
+}
+
+function climateSmooth(t: number): number {
+  return t * t * (3 - 2 * t)
+}
+
+/**
+ * 2D value noise at normalized (u, v) ∈ [0,1]²。返回 [-1, 1]，空间连续。
+ * u/v 乘 FEATURE_SCALE 决定特征密度。同 (u,v) 永远同输出（确定性）。
+ */
+export function sampleClimateNoise(u: number, v: number): number {
+  const fx = u * CLIMATE_NOISE_FEATURE_SCALE
+  const fy = v * CLIMATE_NOISE_FEATURE_SCALE
+  const x0 = Math.floor(fx)
+  const y0 = Math.floor(fy)
+  const tx = climateSmooth(fx - x0)
+  const ty = climateSmooth(fy - y0)
+  const a = climateHash2D(x0, y0)
+  const b = climateHash2D(x0 + 1, y0)
+  const c = climateHash2D(x0, y0 + 1)
+  const d = climateHash2D(x0 + 1, y0 + 1)
+  const top = a + (b - a) * tx
+  const bot = c + (d - c) * tx
+  return (top + (bot - top) * ty) * 2 - 1
+}
+
+function clamp01(v: number): number {
+  if (!Number.isFinite(v)) return 0
+  return v < 0 ? 0 : v > 1 ? 1 : v
+}
+
+// ── 空间网格索引 ────────────────────────────────────
+
+/** 简单空间网格，用于 O(1) 最近邻查找 */
+class SpatialGrid {
+  private cellSize: number
+  private cols: number
+  private rows: number
+  private buckets: number[][]
+  private px: Float64Array
+  private py: Float64Array
+
+  constructor(cells: GridCells, width: number, height: number) {
+    this.cellSize = Math.max(width, height) / 30
+    this.cols = Math.ceil(width / this.cellSize) + 1
+    this.rows = Math.ceil(height / this.cellSize) + 1
+    this.buckets = Array.from({ length: this.cols * this.rows }, () => [])
+    this.px = cells.p // 引用，不拷贝
+    this.py = cells.p
+
+    for (let i = 0; i < cells.length; i++) {
+      const col = Math.floor(cells.p[i * 2] / this.cellSize)
+      const row = Math.floor(cells.p[i * 2 + 1] / this.cellSize)
+      const idx = row * this.cols + col
+      if (idx >= 0 && idx < this.buckets.length) {
+        this.buckets[idx].push(i)
+      }
+    }
+  }
+
+  /** 查找距离 (x, y) 最近的单元格索引 */
+  findNearest(x: number, y: number): number {
+    const col = Math.floor(x / this.cellSize)
+    const row = Math.floor(y / this.cellSize)
+    let best = -1
+    let bestDist = Infinity
+
+    for (let dr = -1; dr <= 1; dr++) {
+      for (let dc = -1; dc <= 1; dc++) {
+        const r = row + dr
+        const c = col + dc
+        if (r < 0 || r >= this.rows || c < 0 || c >= this.cols) continue
+        const bucket = this.buckets[r * this.cols + c]
+        for (let k = 0; k < bucket.length; k++) {
+          const idx = bucket[k]
+          const dx = this.px[idx * 2] - x
+          const dy = this.py[idx * 2 + 1] - y
+          const d = dx * dx + dy * dy
+          if (d < bestDist) { bestDist = d; best = idx }
+        }
+      }
+    }
+    return best
+  }
+
+  /** 查找 (x, y) 附近 maxDist 像素内的所有陆地单元格 */
+  findNearbyLand(x: number, y: number, maxDist: number, cells: GridCells): number[] {
+    const col = Math.floor(x / this.cellSize)
+    const row = Math.floor(y / this.cellSize)
+    const maxCells = Math.ceil(maxDist / this.cellSize) + 1
+    const result: number[] = []
+    const maxDist2 = maxDist * maxDist
+
+    for (let dr = -maxCells; dr <= maxCells; dr++) {
+      for (let dc = -maxCells; dc <= maxCells; dc++) {
+        const r = row + dr
+        const c = col + dc
+        if (r < 0 || r >= this.rows || c < 0 || c >= this.cols) continue
+        const bucket = this.buckets[r * this.cols + c]
+        for (let k = 0; k < bucket.length; k++) {
+          const idx = bucket[k]
+          if (cells.h[idx] < 20) continue
+          const dx = this.px[idx * 2] - x
+          const dy = this.py[idx * 2 + 1] - y
+          if (dx * dx + dy * dy <= maxDist2) {
+            result.push(idx)
+          }
+        }
+      }
+    }
+    return result
+  }
+}
+
+// ── 温度 ────────────────────────────────────────────
+
+/**
+ * 计算温度
+ * 接入洋流影响和风场热输送
+ */
+export function calculateTemperature(
+  cells: GridCells,
+  width: number,
+  height: number,
+  wind: WindData,
+  oceanCurrents: OceanCurrent[],
+  temperatureShift = 0,
+  realism?: MapRealism,
+): void {
+  const n = cells.length
+  const grid = new SpatialGrid(cells, width, height)
+
+  // P0 de-banding: climate coherent noise knobs。
+  // noise=0 → 不加扰动（保留旧纯纬向行为）；>0 时温度基线 += (noise-0.5)*12*noise。
+  // latitudeWeight<1 时把纬向基线按该权重向"赤道基线 × (0.5+noise)"混合，
+  // 进一步弱化条带（赤道基线对纬度不敏感，混合后温度对 y 的依赖变弱）。
+  // 默认 0.5（条带修复：原 0.3 扰动太小，盖不过纬度分段跳变）。
+  const climateNoise = clamp01(realism?.climate?.noise ?? 0.5)
+  const latitudeWeight = clamp01(realism?.climate?.latitudeWeight ?? 1)
+
+  // 基础温度
+  const baseTemp = new Float32Array(n)
+  const tempNorthTropic = TEMPERATURE_EQUATOR - TROPIC_NORTH * TROPICAL_GRADIENT
+  const northernGradient = (tempNorthTropic - TEMPERATURE_NORTH_POLE) / (90 - TROPIC_NORTH)
+  const tempSouthTropic = TEMPERATURE_EQUATOR + TROPIC_SOUTH * TROPICAL_GRADIENT
+  const southernGradient = (tempSouthTropic - TEMPERATURE_SOUTH_POLE) / (90 + TROPIC_SOUTH)
+  for (let i = 0; i < n; i++) {
+    const px = cells.p[i * 2]
+    const y = cells.p[i * 2 + 1]
+    const latitude = 90 - (y / height) * 180
+    let temp = calculateSeaLevelTemperature(latitude)
+
+    // P0-1: 相干噪声扰动温度基线（打破纯纬向条带）。
+    // (noiseValue - 0.5) 在 [-0.5, 0.5]，×12 ≈ ±6℃，× climateNoise 缩放强度。
+    if (climateNoise > 0) {
+      const nv = sampleClimateNoise(px / width, y / height) // [-1,1]
+      const perturb = (nv * 0.5) * 12 * climateNoise
+      if (latitudeWeight < 1) {
+        // 把纬向基线按 latitudeWeight 保留，剩余权重让"赤道基线×(0.5+noise)"接管，
+        // 弱化温度对纬度的纯线性依赖。
+        const equatorish = TEMPERATURE_EQUATOR * (0.5 + nv * 0.5)
+        temp = temp * latitudeWeight + equatorish * (1 - latitudeWeight)
+      }
+      temp += perturb
+    }
+
+    const h = cells.h[i]
+    if (h >= SEA_LEVEL) temp -= getAltitudeTemperatureDrop(h)
+
+    if (Math.abs(cells.t[i]) <= 2 && cells.t[i] > 0) {
+      const coastalTarget = getCoastalModerationTarget(latitude)
+      temp = temp * 0.9 + coastalTarget * 0.1
+    }
+
+    baseTemp[i] = temp
+  }
+
+  // 洋流影响：用空间网格只查找洋流点附近的陆地单元格
+  for (const current of oceanCurrents) {
+    if (current.points.length < 2) continue
+    const effect = current.type === 'warm' ? 5 : -5
+    const maxDist = 50 // 像素
+
+    for (const [px, py] of current.points) {
+      const nearby = grid.findNearbyLand(px, py, maxDist, cells)
+      for (const i of nearby) {
+        const dx = cells.p[i * 2] - px
+        const dy = cells.p[i * 2 + 1] - py
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        const factor = 1 - dist / maxDist
+        baseTemp[i] += effect * factor * current.strength
+      }
+    }
+  }
+
+  // 风场热输送：用空间网格 O(1) 查找
+  for (let i = 0; i < n; i++) {
+    if (cells.h[i] < 20) continue
+
+    const wx = wind.wx[i]
+    const wy = wind.wy[i]
+    if (Math.abs(wx) < 0.01 && Math.abs(wy) < 0.01) continue
+
+    // 沿风向回溯找来源温度
+    let sourceTemp = baseTemp[i]
+    const cx = cells.p[i * 2] - wx * 30
+    const cy = cells.p[i * 2 + 1] - wy * 30
+
+    const bestIdx = grid.findNearest(cx, cy)
+    if (bestIdx >= 0) {
+      sourceTemp = baseTemp[bestIdx]
+    }
+
+    baseTemp[i] = baseTemp[i] * 0.7 + sourceTemp * 0.3
+  }
+
+  // 写入
+  for (let i = 0; i < n; i++) {
+    cells.temp[i] = Math.round(baseTemp[i] + temperatureShift)
+  }
+
+  function calculateSeaLevelTemperature(latitude: number): number {
+    const isTropical = latitude <= TROPIC_NORTH && latitude >= TROPIC_SOUTH
+    if (isTropical) return TEMPERATURE_EQUATOR - Math.abs(latitude) * TROPICAL_GRADIENT
+
+    return latitude > 0
+      ? tempNorthTropic - (latitude - TROPIC_NORTH) * northernGradient
+      : tempSouthTropic + (latitude - TROPIC_SOUTH) * southernGradient
+  }
+
+  function getCoastalModerationTarget(latitude: number): number {
+    const absLat = Math.abs(latitude)
+    if (absLat <= 35) return 15
+    return Math.max(-8, 15 - (absLat - 35) * 0.65)
+  }
+
+  function getAltitudeTemperatureDrop(h: number): number {
+    if (h < SEA_LEVEL) return 0
+    const relativeHeight = Math.pow(h - 18, HEIGHT_EXPONENT)
+    return (relativeHeight / 1000) * 6.5
+  }
+}
+
+// ── 降水 ────────────────────────────────────────────
+
+/**
+ * 连续纬度降水基线（条带修复：替代原 lat<0.3/0.5/0.7 硬阶梯）。
+ *
+ * lat ∈ [0,1]，0=赤道 1=极地。对应真实气候带：
+ *   赤道雨带(ITCZ) → 副热带高压带(沙漠) → 温带西风带 → 极地干燥
+ *
+ * 5 个锚点用 smoothstep 连续插值，消除分段边界的降水跳变（原阶梯在
+ * lat=0.3 两侧从 ~80 跳到 ~37，是 biome 水平色带的主因）。
+ * 锚点值与原阶梯基线对齐（取中值），保证宏观干燥/湿润分布不变。
+ */
+function latitudePrecipBaseline(lat: number): number {
+  const smooth = (t: number) => t * t * (3 - 2 * t)
+  if (lat <= 0.3) return 85 - smooth(lat / 0.3) * 10        // 85→75（赤道雨带）
+  if (lat <= 0.5) return 75 - smooth((lat - 0.3) / 0.2) * 40 // 75→35（副热带干燥）
+  if (lat <= 0.7) return 35 + smooth((lat - 0.5) / 0.2) * 20 // 35→55（温带）
+  return 55 - smooth((lat - 0.7) / 0.3) * 35                 // 55→20（极地干燥）
+}
+
+/**
+ * 计算降水量
+ * 接入风场：迎风坡多雨，背风坡干燥（雨影效应）
+ */
+export function calculatePrecipitation(
+  cells: GridCells,
+  width: number,
+  height: number,
+  wind: WindData,
+  factor = 1.0,
+  rng: () => number,
+  realism?: MapRealism,
+): void {
+  const n = cells.length
+  const grid = new SpatialGrid(cells, width, height)
+
+  // P0 de-banding: 用相干噪声缩放纬向降水基线，让干/湿斑块在 x 方向蜿蜒，
+  // 不再是整纬度行同雨量。noise=0 → 不缩放（保留旧 rng() 行为）。
+  // 默认 0.5（条带修复：原 0.3 扰动太小，盖不过纬度分段跳变）。
+  const climateNoise = clamp01(realism?.climate?.noise ?? 0.5)
+
+  for (let i = 0; i < n; i++) {
+    const px = cells.p[i * 2]
+    const y = cells.p[i * 2 + 1]
+    const lat = Math.abs(y / height - 0.5) * 2
+
+    // 连续纬度降水基线（条带修复：原 lat<0.3/0.5/0.7 硬阶梯 → 边界跳变 → biome 水平色带）。
+    // 改为 smoothstep 在锚点间连续插值，消除分段边界的视觉跳变 + 保留少量白噪声。
+    let prec = latitudePrecipBaseline(lat) + rng() * 10
+
+    // P0-1: 相干噪声让干/湿斑块在空间上蜿蜒（不再纯纬向）。
+    // (1 + (nv-0)*climateNoise)：nv∈[-1,1] → 缩放因子 ∈ [1-noise, 1+noise]。
+    if (climateNoise > 0) {
+      const nv = sampleClimateNoise(px / width, y / height) // [-1,1]
+      prec *= 1 + nv * climateNoise
+    }
+
+    // 沿海效应
+    if (cells.t[i] > 0 && cells.t[i] <= 3) {
+      prec += 15
+    }
+
+    // 风场驱动的降水
+    const wx = wind.wx[i]
+    const wy = wind.wy[i]
+    const ws = wind.ws[i]
+
+    if (cells.h[i] >= 20 && (Math.abs(wx) > 0.01 || Math.abs(wy) > 0.01)) {
+      let hasWaterSource = false
+      let hasRainShadow = false
+      let waterDist = 0
+
+      const stepSize = 12
+      let cx = cells.p[i * 2]
+      let cy = cells.p[i * 2 + 1]
+
+      for (let step = 0; step < 8; step++) {
+        cx -= wx * stepSize
+        cy -= wy * stepSize
+
+        if (cx < 0 || cx >= width || cy < 0 || cy >= height) break
+
+        // 用空间网格 O(1) 查找
+        const bestIdx = grid.findNearest(cx, cy)
+        if (bestIdx < 0) break
+
+        if (cells.h[bestIdx] < 20) {
+          hasWaterSource = true
+          waterDist = step
+          break
+        }
+
+        if (cells.h[bestIdx] > 60 && step < 5) {
+          hasRainShadow = true
+        }
+      }
+
+      if (hasWaterSource) {
+        const moistureBonus = (1 - waterDist / 8) * 30 * ws
+        prec += moistureBonus
+        if (cells.h[i] > 50) {
+          prec += (cells.h[i] - 50) * 0.4
+        }
+      } else if (hasRainShadow) {
+        prec *= 0.45
+      }
+    }
+
+    // 海洋蒸发加成
+    if (cells.t[i] > 0 && cells.t[i] <= 2 && cells.h[i] >= 20) {
+      prec += 10 * (1 + ws * 0.5)
+    }
+
+    cells.prec[i] = Math.min(255, Math.max(0, Math.round(prec * factor)))
+  }
+}
+
+// ── 生态群落 ────────────────────────────────────────
+
+/** 指定生态群落 */
+export function assignBiomes(cells: GridCells, height: number): void {
+  if (!Number.isFinite(height) || height <= 0) {
+    throw new Error('assignBiomes: height is required for latitude-aware biome classification')
+  }
+
+  for (let i = 0; i < cells.length; i++) {
+    const h = cells.h[i]
+    const temp = cells.temp[i]
+    const prec = cells.prec[i]
+    const coastalLand = cells.t[i] > 0 && cells.t[i] <= 2
+    const absLat = Math.abs(90 - (cells.p[i * 2 + 1] / height) * 180)
+
+    if (h < SEA_LEVEL) { cells.biome[i] = 0; continue }
+    if (isGlacierCell(i, absLat)) { cells.biome[i] = 11; continue }
+    if (isPolarTundraCell(temp, absLat)) { cells.biome[i] = 10; continue }
+    if (isPolarDesertCell(prec, absLat)) { cells.biome[i] = 2; continue }
+    if (temp >= 25 && prec < 20 && cells.r[i] === 0) { cells.biome[i] = 1; continue }
+
+    const moisture = prec + (cells.fl[i] > 0 ? Math.min(cells.fl[i] / 10, 20) : 0)
+    if (temp > -2 && moisture > 80 && h < 30) {
+      cells.biome[i] = sanitizePolarBiome(absLat >= 64 ? coldOpenBiome(prec) : 12, temp, prec, absLat)
+      continue
+    }
+
+    const moistureIdx = Math.min(Math.floor(moisture / 25), 4)
+    const tempIdx = Math.min(Math.max(Math.floor((25 - temp)), 0), 25)
+    const matrixBiome = BIOME_MATRIX[moistureIdx][tempIdx]
+    cells.biome[i] = sanitizeMatrixBiome(matrixBiome, temp, prec, absLat)
+    cells.biome[i] = sanitizePolarBiome(cells.biome[i], temp, prec, absLat)
+
+    if (coastalLand && cells.biome[i] === 11 && temp > -10) {
+      cells.biome[i] = 10
+    }
+  }
+
+  // Defensive invariant: land must never keep biome 0 (ocean). A malformed
+  // climate input would otherwise make downstream scoring and rendering treat
+  // valid land as blue water.
+  for (let i = 0; i < cells.length; i++) {
+    if (cells.h[i] < SEA_LEVEL) continue
+    if (cells.biome[i] > 0 && BIOMES[cells.biome[i]]) continue
+    const absLat = Math.abs(90 - (cells.p[i * 2 + 1] / height) * 180)
+    cells.biome[i] = fallbackLandBiome(cells.temp[i], cells.prec[i], absLat)
+  }
+
+  function isGlacierCell(i: number, absLat: number): boolean {
+    const h = cells.h[i]
+    const temp = cells.temp[i]
+    const dist = cells.t[i]
+    if (h < SEA_LEVEL) return false
+    if (absLat >= 87 && temp <= -5) return true
+    if (absLat >= 80 && temp <= -11) return true
+    if (absLat >= 72 && temp <= -17) return true
+    if (absLat >= 66 && temp <= -22) return true
+    if (temp > -7) return false
+    if (h >= 94 && temp <= -14) return true
+    if (dist >= 8 && temp <= -18 && absLat >= 66) return true
+    return false
+  }
+
+  function isPolarTundraCell(temp: number, absLat: number): boolean {
+    if (absLat >= 76 && temp <= 5) return true
+    if (absLat >= 68 && temp <= 2) return true
+    if (absLat >= 62 && temp <= -2) return true
+    return absLat >= 56 && temp <= -6
+  }
+
+  function isPolarDesertCell(prec: number, absLat: number): boolean {
+    return absLat >= 68 && prec < 18
+  }
+
+  function clampPolarVegetation(biome: number, temp: number, prec: number, absLat: number): number {
+    if (!isGreenBiome(biome)) return biome
+    if (absLat >= 68) return coldOpenBiome(prec)
+    if (absLat >= 62 && temp <= 4) return coldOpenBiome(prec)
+    if (absLat >= 56 && temp <= -2) return coldOpenBiome(prec)
+    if (absLat >= 48 && temp <= -6) return coldOpenBiome(prec)
+    return biome
+  }
+
+  function sanitizePolarBiome(biome: number, temp: number, prec: number, absLat: number): number {
+    if (biome === 11 || biome === 10 || biome === 2) return biome
+    if (absLat >= 84) return temp <= -1 ? 11 : 10
+    if (absLat >= 76) return temp <= -7 ? 11 : coldOpenBiome(prec)
+    if (absLat >= 68 && temp <= 2) return coldOpenBiome(prec)
+    if (absLat >= 62 && temp <= -2) return coldOpenBiome(prec)
+    return clampPolarVegetation(biome, temp, prec, absLat)
+  }
+
+  function sanitizeMatrixBiome(biome: number, temp: number, prec: number, absLat: number): number {
+    if (biome === 11) {
+      if (absLat < 62 && temp > -10) return prec < 32 ? 9 : 6
+      return coldOpenBiome(prec)
+    }
+    if (biome === 10 && absLat < 60) {
+      if (prec < 24) return 4
+      if (temp < 4) return 9
+      if (prec < 56) return 9
+      return 6
+    }
+    if (biome === 2 && absLat < 62 && temp > -4) {
+      return prec < 24 ? 4 : 9
+    }
+    return biome
+  }
+
+  function isGreenBiome(biome: number): boolean {
+    return (biome >= 3 && biome <= 9) || biome === 12
+  }
+
+  function coldOpenBiome(prec: number): number {
+    return prec < 24 ? 2 : 10
+  }
+
+  function fallbackLandBiome(temp: number, prec: number, absLat: number): number {
+    if (absLat >= 84) return temp <= -1 ? 11 : 10
+    if (absLat >= 68) return temp <= -7 ? 11 : coldOpenBiome(prec)
+    if (temp >= 25 && prec < 20) return 1
+    if (temp <= -6) return prec < 24 ? 2 : 10
+    if (prec > 85) return temp > 20 ? 7 : 8
+    if (prec > 55) return temp > 18 ? 5 : 6
+    if (prec < 22) return temp > 18 ? 1 : 4
+    return temp > 18 ? 3 : 4
+  }
+}
+
+/** 计算单元格适宜度评分 */
+export function rankCells(cells: GridCells): void {
+  for (let i = 0; i < cells.length; i++) {
+    if (cells.h[i] < 20) { cells.s[i] = 0; continue }
+
+    const biome = BIOMES[cells.biome[i]]
+    let score = biome.habitability
+
+    if (cells.r[i] > 0) score += 15
+    if (cells.harbor[i] > 0) score += 10
+    if (cells.h[i] > 70) score -= (cells.h[i] - 70) * 2
+    if (cells.t[i] > 0 && cells.t[i] <= 3) score += 5
+
+    cells.s[i] = Math.max(0, score)
+  }
+}

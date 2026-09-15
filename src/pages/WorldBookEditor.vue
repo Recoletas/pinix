@@ -1,0 +1,3629 @@
+<template>
+  <div class="worldbook-page">
+    <div class="editor-topbar">
+      <SettingsContextBar
+        v-model="selectedWorldbookId"
+        :worldbooks-index="worldbooksIndex"
+        :active-worldbook="activeWorldbook"
+        :meta-label="`${worldbooksIndex.length} 本世界书 · ${entries.length} 条目`"
+        :project-label="projectContextLabel"
+        :project-locked="isProjectMode"
+        :route-mismatch-notice="contextNotice"
+        @change="onWorldbookChange"
+      >
+        <template #actions>
+          <SettingsReturnToManuscript :worldbook-id="context?.worldbookId || ''" />
+          <button
+            v-if="!isProjectMode"
+            class="editor-create-action"
+            type="button"
+            aria-label="新建世界书"
+            title="新建世界书"
+            @click="createWorldbook"
+          >
+            <WorkbenchIcon name="bookmark-plus" :size="15" />
+            <span>新建世界书</span>
+          </button>
+        </template>
+      </SettingsContextBar>
+      <SettingsSectionNav />
+    </div>
+
+    <div v-if="requestedEntryMissing" class="entry-missing-strip" data-test="entry-missing" role="status">
+      <p>要打开的条目已不存在，可能已被删除。目录仍可浏览；请从左侧目录重新选择。</p>
+    </div>
+
+    <div class="editor-layout">
+      <div v-if="contextLoading" class="editor-empty" role="status">正在打开这本书的条目…</div>
+      <div v-else-if="projectContextStatus === 'unbound'" class="editor-empty" data-test="entries-unbound">
+        <p>这本书还没有关联世界书。</p>
+        <p>回写作工作台右栏「关联世界书」完成关联后，这里会打开它的条目。</p>
+      </div>
+      <div v-else-if="projectContextStatus === 'missing-book'" class="editor-empty">
+        <p>这本书已不存在。</p>
+      </div>
+      <div v-else-if="loadError" class="editor-empty">
+        <p>{{ loadError }}</p>
+      </div>
+      <section class="editor-main" v-else-if="activeWorldbook">
+        <nav class="editor-tabs" aria-label="世界书编辑分区">
+          <button
+            v-for="tab in editorTabs"
+            :key="tab.key"
+            :class="['editor-tab', { active: editorTab === tab.key }]"
+            @click="editorTab = tab.key"
+          >
+            <WorkbenchIcon :name="tab.icon" :size="15" />
+            {{ tab.label }}
+          </button>
+        </nav>
+
+        <section v-if="editorTab === 'base'" class="card">
+          <div class="card-head">
+            <h2>世界书基础设定</h2>
+          </div>
+          <div class="worldbook-form">
+            <label>
+              名称
+              <input v-model.trim="worldbookForm.name" class="text-input" type="text" placeholder="世界书名称" />
+            </label>
+            <label>
+              作者
+              <input v-model.trim="worldbookForm.author" class="text-input" type="text" placeholder="作者（可选）" />
+            </label>
+            <label class="full-width">
+              世界设定描述
+              <textarea
+                v-model.trim="worldbookForm.worldDescription"
+                class="text-area"
+                rows="4"
+                placeholder="描述世界观的基本设定、背景故事、核心概念等。这是 AI 生成内容时必须遵循的基础设定。"
+              ></textarea>
+            </label>
+            <label class="full-width">
+              写作风格
+              <textarea
+                v-model.trim="worldbookForm.writingStyle"
+                class="text-area"
+                rows="3"
+                placeholder="定义叙事风格、语言风格、情感基调等。例如：采用第三人称叙事，语言简洁有力，注重心理描写..."
+              ></textarea>
+            </label>
+            <label class="full-width">
+              示例文本
+              <textarea
+                v-model.trim="worldbookForm.examples"
+                class="text-area"
+                rows="4"
+                placeholder="提供示例供 AI 参考，帮助理解预期的输出风格和格式。可以是优秀的叙事片段示例。"
+              ></textarea>
+            </label>
+            <label class="full-width">
+              禁止内容
+              <textarea
+                v-model.trim="worldbookForm.forbidden"
+                class="text-area"
+                rows="3"
+                placeholder="定义 AI 不应该生成的内容类型、风格或元素。例如：避免过于现代的口语、不出现某些敏感话题..."
+              ></textarea>
+            </label>
+          </div>
+          <div class="card-actions">
+            <button class="primary-btn" :disabled="savingWorldbook" @click="saveWorldbook">
+              {{ savingWorldbook ? '保存中...' : '保存世界书' }}
+            </button>
+            <button class="danger-btn" @click="deleteWorldbook">删除世界书</button>
+          </div>
+        </section>
+
+        <section v-if="editorTab === 'transfer'" class="card">
+          <div class="card-head split">
+            <h2>导入导出</h2>
+            <div class="entry-tools">
+              <input
+                ref="importFileInputRef"
+                class="hidden-file-input"
+                type="file"
+                accept=".json,application/json"
+                @change="handleImportFileChange"
+              />
+              <button class="ghost-btn" :disabled="importing" @click="openImportFilePicker">
+                {{ importing ? '读取中...' : '导入 SillyTavern JSON' }}
+              </button>
+              <button class="ghost-btn" :disabled="exporting || !activeWorldbook?.id" @click="exportActiveWorldbook">
+                {{ exporting ? '导出中...' : '导出当前世界书' }}
+              </button>
+            </div>
+          </div>
+
+          <div v-if="importError" class="import-error">{{ importError }}</div>
+          <div v-if="transferMessage" class="import-success">{{ transferMessage }}</div>
+
+          <div v-if="importPreview" class="import-preview">
+            <div class="import-preview-head">
+              <strong>{{ importPreview.name }}</strong>
+              <span>{{ importPreview.fileName }}</span>
+            </div>
+
+            <div class="import-meta-grid">
+              <div class="meta-item">
+                <span>条目数</span>
+                <strong>{{ importPreview.entryCount }}</strong>
+              </div>
+              <div class="meta-item">
+                <span>分组数</span>
+                <strong>{{ importPreview.groupCount }}</strong>
+              </div>
+              <div class="meta-item">
+                <span>作者</span>
+                <strong>{{ importPreview.author || '未知' }}</strong>
+              </div>
+            </div>
+
+            <div v-if="importPreview.typeStats.length" class="import-type-list">
+              <span v-for="stat in importPreview.typeStats" :key="stat.type" class="type-chip">
+                {{ stat.label }} {{ stat.count }}
+              </span>
+            </div>
+
+            <div v-if="importPreview.previewEntries.length" class="preview-entry-list">
+              <div
+                v-for="previewEntry in importPreview.previewEntries"
+                :key="previewEntry.uid"
+                class="preview-entry-item"
+              >
+                <span class="preview-entry-name">{{ previewEntry.name }}</span>
+                <span class="preview-entry-meta">{{ entryTypeLabel(previewEntry.type) }} / {{ entryModeLabel(previewEntry.mode) }}</span>
+              </div>
+            </div>
+
+            <div class="card-actions">
+              <button class="primary-btn" :disabled="importing" @click="confirmImportFromPreview">
+                {{ importing ? '导入中...' : '确认导入为新世界书' }}
+              </button>
+              <button class="ghost-btn" @click="clearImportPreview">取消预览</button>
+            </div>
+          </div>
+
+          <div v-else class="empty-hint">
+            导入前会先显示摘要预览，确认后再创建新世界书。
+          </div>
+        </section>
+
+        <section v-if="editorTab === 'groups'" class="card">
+          <div class="card-head split">
+            <h2>分组管理</h2>
+            <button class="ghost-btn small" :disabled="groupWorking" @click="pruneEmptyGroups">
+              清理空分组
+            </button>
+          </div>
+
+          <div v-if="groupError" class="import-error">{{ groupError }}</div>
+          <div v-if="groupSuccess" class="import-success">{{ groupSuccess }}</div>
+
+          <div v-if="groupStats.length" class="group-overview">
+            <div
+              v-for="group in groupStats"
+              :key="group.name"
+              class="group-overview-item"
+              :class="{ empty: group.entryCount === 0 }"
+            >
+              <span>{{ group.name }}</span>
+              <strong>{{ group.entryCount }} 条</strong>
+            </div>
+          </div>
+          <div v-else class="empty-hint">当前没有分组，可先创建。</div>
+
+          <div class="group-manager-grid">
+            <section class="group-manager-block">
+              <h3>创建分组</h3>
+              <div class="group-form-row">
+                <input
+                  v-model.trim="groupDraftName"
+                  class="text-input"
+                  type="text"
+                  list="worldbook-group-options"
+                  placeholder="输入新分组名称"
+                />
+                <button class="ghost-btn" :disabled="groupWorking" @click="createGroup">
+                  创建
+                </button>
+              </div>
+            </section>
+
+            <section class="group-manager-block" v-if="groupStats.length">
+              <h3>重命名分组</h3>
+              <div class="group-form-row">
+                <select v-model="groupRenameSource" class="select-input">
+                  <option v-for="group in groupStats" :key="`rename-${group.name}`" :value="group.name">
+                    {{ group.name }}
+                  </option>
+                </select>
+                <input
+                  v-model.trim="groupRenameTarget"
+                  class="text-input"
+                  type="text"
+                  list="worldbook-group-options"
+                  placeholder="新分组名称"
+                />
+                <button class="ghost-btn" :disabled="groupWorking" @click="renameGroup">
+                  重命名
+                </button>
+              </div>
+            </section>
+
+            <section class="group-manager-block" v-if="groupStats.length">
+              <h3>迁移条目</h3>
+              <div class="group-form-row">
+                <select v-model="groupMoveSource" class="select-input">
+                  <option v-for="group in groupStats" :key="`move-${group.name}`" :value="group.name">
+                    {{ group.name }}
+                  </option>
+                </select>
+                <input
+                  v-model.trim="groupMoveTarget"
+                  class="text-input"
+                  type="text"
+                  list="worldbook-group-options"
+                  placeholder="迁移到分组"
+                />
+                <label class="checkbox-line inline">
+                  <input v-model="groupDropSourceAfterMove" type="checkbox" />
+                  <span>迁移后删除源分组</span>
+                </label>
+                <button class="ghost-btn" :disabled="groupWorking" @click="migrateGroupEntries">
+                  迁移
+                </button>
+              </div>
+            </section>
+
+            <section class="group-manager-block danger" v-if="groupStats.length">
+              <h3>删除分组</h3>
+              <div class="group-form-row">
+                <select v-model="groupDeleteSource" class="select-input">
+                  <option v-for="group in groupStats" :key="`delete-${group.name}`" :value="group.name">
+                    {{ group.name }}
+                  </option>
+                </select>
+                <button class="danger-btn" :disabled="groupWorking" @click="deleteGroup">
+                  删除并清空条目分组
+                </button>
+              </div>
+            </section>
+          </div>
+
+          <datalist id="worldbook-group-options">
+            <option v-for="group in availableGroups" :key="`opt-${group}`" :value="group"></option>
+          </datalist>
+        </section>
+
+        <section v-if="editorTab === 'entries'" class="card entry-workspace-card">
+          <div class="card-head split">
+            <h2>条目管理</h2>
+            <div class="entry-tools">
+              <input
+                v-model.trim="entrySearch"
+                class="search-input"
+                placeholder="搜索条目..."
+                type="text"
+              />
+              <select v-model="entryTypeFilter" class="select-input">
+                <option value="all">全部类型</option>
+                <option v-for="type in entryTypes" :key="type.value" :value="type.value">
+                  {{ type.label }}
+                </option>
+              </select>
+              <select v-model="injectionModeFilter" class="select-input">
+                <option value="all">全部注入模式</option>
+                <option v-for="mode in injectionModes" :key="mode.value" :value="mode.value">
+                  {{ mode.label }}
+                </option>
+              </select>
+              <select v-model="entryGroupFilter" class="select-input">
+                <option value="all">全部分组</option>
+                <option value="__none">未分组</option>
+                <option v-for="group in availableGroups" :key="group" :value="group">
+                  {{ group }}
+                </option>
+              </select>
+              <button class="ghost-btn" :class="{ active: maintenanceOpen }" @click="toggleMaintenance">
+                AI 处理世界书
+              </button>
+              <button class="primary-btn" @click="createEntry">新增条目</button>
+            </div>
+          </div>
+
+          <section v-if="maintenanceOpen" class="worldbook-maintenance" aria-labelledby="worldbook-maintenance-title">
+            <div class="maintenance-head">
+              <div>
+                <span class="panel-kicker">维护工作台</span>
+                <h3 id="worldbook-maintenance-title">用自然语言维护世界书</h3>
+                <p>模型只提出候选，确认后才会写入条目。</p>
+              </div>
+              <span class="maintenance-revision" v-if="maintenanceRevision">基于当前版本</span>
+            </div>
+            <div class="maintenance-modes" role="tablist" aria-label="世界书处理模式">
+              <button
+                v-for="mode in maintenanceModes"
+                :key="mode.value"
+                type="button"
+                :class="['maintenance-mode', { active: maintenanceMode === mode.value }]"
+                @click="maintenanceMode = mode.value"
+              >
+                <strong>{{ mode.label }}</strong>
+                <span>{{ mode.description }}</span>
+              </button>
+            </div>
+            <textarea
+              v-model.trim="maintenanceBrief"
+              class="text-area maintenance-brief"
+              rows="3"
+              :placeholder="maintenancePlaceholder"
+              :disabled="maintenanceWorking"
+            ></textarea>
+            <div class="maintenance-actions">
+              <span class="maintenance-scope">
+                {{ maintenanceMode === 'audit'
+                  ? `本地预筛 ${maintenanceCandidateCount} 个审查目标`
+                  : maintenanceMode === 'refine'
+                    ? `已选 ${selectedEntryIds.length} 条`
+                    : '读取当前世界书相关条目' }}
+              </span>
+              <button
+                type="button"
+                class="primary-btn"
+                :disabled="maintenanceWorking || !maintenanceCanRun"
+                @click="runMaintenance"
+              >
+                {{ maintenanceWorking ? '模型审阅中...' : maintenanceActionLabel }}
+              </button>
+            </div>
+            <div v-if="maintenanceError" class="maintenance-error" role="alert">{{ maintenanceError }}</div>
+            <div v-if="maintenanceStale" class="maintenance-stale" role="status">
+              世界书已在生成后发生变化，这批建议已过期。请重新运行审查，避免覆盖新的设定。
+            </div>
+            <div v-if="maintenanceSummary" class="maintenance-summary">{{ maintenanceSummary }}</div>
+            <div v-if="maintenanceCandidates.length" class="maintenance-candidates">
+              <article
+                v-for="candidate in maintenanceCandidates"
+                :key="candidate.id"
+                :class="['maintenance-candidate', `is-${candidate.status}`]"
+              >
+                <div class="candidate-head">
+                  <span class="candidate-action">{{ maintenanceActionLabelFor(candidate.action) }}</span>
+                  <span :class="['candidate-confidence', `is-${candidate.confidence}`]">{{ candidate.confidence }}</span>
+                  <span v-if="candidate.status === 'applied'" class="candidate-status">已采纳</span>
+                  <span v-else-if="candidate.status === 'ignored'" class="candidate-status">已忽略</span>
+                  <button
+                    v-if="candidate.proposedEntry && candidate.status === 'pending'"
+                    type="button"
+                    class="ghost-btn small"
+                    @click="toggleMaintenanceCandidateEdit(candidate)"
+                  >
+                    {{ candidate.editing ? '收起编辑' : '编辑建议' }}
+                  </button>
+                </div>
+                <p class="candidate-reason">{{ candidate.reason || '模型未提供额外说明。' }}</p>
+                <div v-if="candidate.proposedEntry && !candidate.editing" class="candidate-proposal">
+                  <strong>{{ candidate.proposedEntry.name }}</strong>
+                  <span>{{ entryTypeLabel(candidate.proposedEntry.type) }} · {{ candidate.proposedEntry.group || '未分组' }}</span>
+                  <p>{{ candidate.proposedEntry.content }}</p>
+                </div>
+                <div v-if="candidate.editor && candidate.editing" class="candidate-edit-form">
+                  <input v-model.trim="candidate.editor.name" class="text-input" type="text" placeholder="条目名称" />
+                  <select v-model="candidate.editor.type" class="select-input">
+                    <option v-for="type in entryTypes" :key="type.value" :value="type.value">{{ type.label }}</option>
+                  </select>
+                  <input v-model.trim="candidate.editor.keysText" class="text-input" type="text" placeholder="主触发词，逗号分隔" />
+                  <input v-model.trim="candidate.editor.keysSecondaryText" class="text-input" type="text" placeholder="次级触发词，逗号分隔" />
+                  <input v-model.trim="candidate.editor.group" class="text-input" type="text" placeholder="分组" />
+                  <textarea v-model.trim="candidate.editor.content" class="text-area" rows="5" placeholder="条目正文"></textarea>
+                </div>
+                <div v-if="candidate.entryIds.length" class="candidate-links">
+                  涉及：{{ candidate.entryIds.map(entryName).join('、') }}
+                </div>
+                <div v-if="candidate.status === 'pending'" class="candidate-actions">
+                  <button type="button" class="primary-btn small" :disabled="maintenanceApplying || maintenanceStale" @click="applyMaintenanceCandidate(candidate)">
+                    {{ candidate.action === 'ignore' || candidate.action === 'conflict' ? '标记已处理' : '采纳建议' }}
+                  </button>
+                  <button type="button" class="ghost-btn small" :disabled="maintenanceApplying" @click="ignoreMaintenanceCandidate(candidate)">忽略</button>
+                </div>
+              </article>
+            </div>
+            <div v-else-if="maintenanceCompleted" class="maintenance-empty">没有需要处理的候选。</div>
+          </section>
+
+          <div class="bulk-tools" v-if="filteredEntries.length">
+            <span class="bulk-label">已选 {{ selectedEntryIds.length }} 条</span>
+            <button class="ghost-btn small" @click="selectAllFilteredEntries">全选筛选结果</button>
+            <button class="ghost-btn small" @click="invertFilteredSelection">反选</button>
+            <button class="ghost-btn small" @click="clearEntrySelection">清空选择</button>
+            <select v-model="bulkModeTarget" class="select-input compact">
+              <option v-for="mode in injectionModes" :key="mode.value" :value="mode.value">
+                {{ mode.label }}
+              </option>
+            </select>
+            <button class="ghost-btn small" :disabled="!selectedEntryIds.length" @click="applyBulkMode">
+              批量改模式
+            </button>
+            <input
+              v-model.trim="bulkGroupValue"
+              class="text-input compact"
+              type="text"
+              placeholder="批量分组"
+            />
+            <button class="ghost-btn small" :disabled="!selectedEntryIds.length" @click="applyBulkGroup">
+              批量改分组
+            </button>
+            <button class="danger-btn small" :disabled="!selectedEntryIds.length" @click="bulkDeleteEntries">
+              批量删除
+            </button>
+          </div>
+
+          <div class="entry-layout">
+            <aside class="entry-list">
+              <div
+                v-for="entry in filteredEntries"
+                :key="entry.id"
+                :class="['entry-item', { active: entry.id === selectedEntryId }]"
+                :data-entry-id="entry.id"
+                @click="pickEntry(entry.id)"
+              >
+                <input
+                  type="checkbox"
+                  class="entry-checkbox"
+                  :checked="isEntrySelected(entry.id)"
+                  @click.stop
+                  @change="toggleEntrySelection(entry.id, $event.target.checked)"
+                />
+                <div class="entry-main">
+                  <span class="entry-title">{{ entry.name || '未命名条目' }}</span>
+                  <div class="entry-badges">
+                    <span class="entry-type">{{ entryTypeLabel(entry.type) }}</span>
+                    <span class="entry-mode">{{ entryModeLabel(entry.injection?.mode) }}</span>
+                    <span v-if="entry.injection?.group" class="entry-group">{{ entry.injection.group }}</span>
+                  </div>
+                </div>
+              </div>
+              <div v-if="!filteredEntries.length" class="empty-hint">暂无匹配条目</div>
+            </aside>
+
+            <div class="entry-editor" v-if="selectedEntry">
+              <label>
+                条目名称
+                <input v-model.trim="entryForm.name" class="text-input" type="text" placeholder="条目名称" />
+              </label>
+              <label>
+                条目类型
+                <select v-model="entryForm.type" class="select-input">
+                  <option v-for="type in entryTypes" :key="type.value" :value="type.value">
+                    {{ type.label }}
+                  </option>
+                </select>
+              </label>
+              <label>
+                触发词（逗号分隔）
+                <input
+                  v-model.trim="entryForm.keys"
+                  class="text-input"
+                  type="text"
+                  placeholder="例如：公爵领, 埃利奥诺"
+                />
+              </label>
+              <label>
+                次级触发词（逗号分隔）
+                <input
+                  v-model.trim="entryForm.keysSecondary"
+                  class="text-input"
+                  type="text"
+                  placeholder="例如：边境领地"
+                />
+              </label>
+              <label>
+                内容
+                <textarea
+                  v-model.trim="entryForm.content"
+                  class="text-area"
+                  rows="8"
+                  placeholder="输入条目内容"
+                ></textarea>
+              </label>
+
+              <section v-if="entryForm.type === 'character'" class="entry-voice-editor" aria-labelledby="entry-voice-title">
+                <header class="entry-voice-editor__head">
+                  <div>
+                    <span class="panel-kicker">角色声口</span>
+                    <h3 id="entry-voice-title">说话方式与示例</h3>
+                  </div>
+                  <span class="entry-voice-editor__count">{{ entryForm.samples.length }}/6</span>
+                </header>
+                <p class="entry-voice-editor__hint">
+                  只锚定当前说话角色；生成时最多使用前 3 条，空白与重复样例会在保存时清理。
+                </p>
+                <label>
+                  说话方式
+                  <textarea
+                    v-model="entryForm.speechStyle"
+                    rows="3"
+                    maxlength="240"
+                    placeholder="句长、措辞、回避或强调习惯"
+                  ></textarea>
+                </label>
+                <label v-for="(_sample, index) in entryForm.samples" :key="index">
+                  示例台词 {{ index + 1 }}
+                  <span class="entry-voice-editor__sample">
+                    <textarea v-model="entryForm.samples[index]" rows="2" maxlength="240"></textarea>
+                    <button type="button" class="ghost-btn small" @click="removeVoiceSample(index)">移除</button>
+                  </span>
+                </label>
+                <button
+                  v-if="entryForm.samples.length < 6"
+                  type="button"
+                  class="ghost-btn small entry-voice-editor__add"
+                  @click="addVoiceSample"
+                >
+                  添加示例台词
+                </button>
+              </section>
+
+              <section class="injection-panel">
+                <h3>注入参数</h3>
+                <div class="injection-grid">
+                  <label>
+                    注入模式
+                    <select v-model="entryForm.injectionMode" class="select-input">
+                      <option v-for="mode in injectionModes" :key="mode.value" :value="mode.value">
+                        {{ mode.label }}
+                      </option>
+                    </select>
+                  </label>
+                  <label>
+                    概率（0-100）
+                    <input v-model.number="entryForm.injectionProbability" class="text-input" type="number" min="0" max="100" />
+                  </label>
+                  <label>
+                    深度
+                    <input v-model.number="entryForm.injectionDepth" class="text-input" type="number" min="1" />
+                  </label>
+                  <label>
+                    冷却轮次
+                    <input v-model.number="entryForm.injectionCooldown" class="text-input" type="number" min="0" />
+                  </label>
+                  <label class="full-row">
+                    分组
+                    <input v-model.trim="entryForm.injectionGroup" class="text-input" type="text" placeholder="例如：地理设定" />
+                  </label>
+                  <label>
+                    次级词判定
+                    <select v-model="entryForm.injectionSecondaryMode" class="select-input">
+                      <option value="any">任一命中（any）</option>
+                      <option value="all">全部命中（all）</option>
+                    </select>
+                  </label>
+                  <label class="checkbox-line" title="拉丁文本要求词边界匹配（中文默认短语匹配）">
+                    <input v-model="entryForm.injectionWholeWord" type="checkbox" />
+                    <span>整词匹配</span>
+                  </label>
+                  <label class="checkbox-line" title="区分大小写（拉丁文本）">
+                    <input v-model="entryForm.injectionCaseSensitive" type="checkbox" />
+                    <span>区分大小写</span>
+                  </label>
+                </div>
+                <label class="checkbox-line">
+                  <input v-model="entryForm.excludeRecursion" type="checkbox" />
+                  <span>排除递归注入</span>
+                </label>
+                <div class="group-quick" v-if="availableGroups.length">
+                  <span class="group-quick-label">常用分组</span>
+                  <div class="group-chip-list">
+                    <button
+                      v-for="group in availableGroups"
+                      :key="group"
+                      class="group-chip"
+                      :class="{ active: entryForm.injectionGroup === group }"
+                      @click.prevent="setEntryGroup(group)"
+                    >
+                      {{ group }}
+                    </button>
+                  </div>
+                </div>
+              </section>
+
+              <div class="card-actions">
+                <button class="primary-btn" :disabled="savingEntry" @click="saveEntry">
+                  {{ savingEntry ? '保存中...' : '保存条目' }}
+                </button>
+                <button class="danger-btn" @click="deleteEntry">删除条目</button>
+              </div>
+            </div>
+
+            <div class="entry-editor empty" v-else>
+              请选择一个条目进行编辑，或点击“新增条目”。
+            </div>
+          </div>
+        </section>
+
+      </section>
+
+      <section class="editor-main empty" v-else>
+        尚无可编辑世界书，点击上方“新建世界书”开始。
+      </section>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useWorldStore } from '../stores/worldStore'
+import { formatWorldbookStatus } from '../services/worldbook/worldbookFeedback'
+import { normalizeNarrativeVoiceProfile } from '../services/narrativeVoiceProfile'
+import {
+  createWorldbookMaintenanceServices,
+  findWorldbookAuditTargets,
+  WORLDBOOK_MAINTENANCE_MODES
+} from '../services/worldbook/worldbookMaintenance'
+import { createSettingsPageDispatcher } from '../services/agents/settings/settingsTaskDispatcher'
+import { createSettingsMaintenanceWorkflow } from '../services/agents/settings/settingsMaintenanceWorkflow'
+import SettingsSectionNav from '../components/workbench/SettingsSectionNav.vue'
+import SettingsContextBar from '../components/workbench/SettingsContextBar.vue'
+import { useSettingsProjectContext } from '../composables/useSettingsProjectContext'
+import SettingsReturnToManuscript from '../components/workbench/SettingsReturnToManuscript.vue'
+import WorkbenchIcon from '../components/workbench/WorkbenchIcon.vue'
+
+const router = useRouter()
+const route = useRoute()
+const worldStore = useWorldStore()
+
+// 设定 Agent 调度入口：高级编辑维护统一走 canonical settings.maintenance.audit 任务。
+const settingsDispatcher = createSettingsPageDispatcher({
+  adapters: {
+    settingsMaintenance: createSettingsMaintenanceWorkflow(createWorldbookMaintenanceServices())
+  }
+})
+
+const entrySearch = ref('')
+const entryTypeFilter = ref('all')
+const injectionModeFilter = ref('all')
+const entryGroupFilter = ref('all')
+const selectedEntryId = ref('')
+const selectedEntryIds = ref([])
+const bulkModeTarget = ref('selective')
+const bulkGroupValue = ref('')
+const importFileInputRef = ref(null)
+const importPreview = ref(null)
+const importError = ref('')
+const transferMessage = ref('')
+const importing = ref(false)
+const exporting = ref(false)
+const groupDraftName = ref('')
+const groupRenameSource = ref('')
+const groupRenameTarget = ref('')
+const groupMoveSource = ref('')
+const groupMoveTarget = ref('')
+const groupDeleteSource = ref('')
+const groupDropSourceAfterMove = ref(true)
+const groupWorking = ref(false)
+const groupError = ref('')
+const groupSuccess = ref('')
+const savingWorldbook = ref(false)
+const savingEntry = ref(false)
+const maintenanceOpen = ref(false)
+const maintenanceMode = ref(WORLDBOOK_MAINTENANCE_MODES.AUDIT)
+const maintenanceBrief = ref('')
+const maintenanceWorking = ref(false)
+const maintenanceApplying = ref(false)
+const maintenanceError = ref('')
+const maintenanceSummary = ref('')
+const maintenanceCandidates = ref([])
+const maintenanceRevision = ref('')
+const maintenanceTouchedEntryIds = ref(new Set())
+const maintenanceCompleted = ref(false)
+
+const maintenanceModes = [
+  {
+    value: WORLDBOOK_MAINTENANCE_MODES.CREATE,
+    label: '新增设定',
+    description: '按自然语言提出新内容'
+  },
+  {
+    value: WORLDBOOK_MAINTENANCE_MODES.AUDIT,
+    label: '审查整理',
+    description: '找重复、重叠和冲突'
+  },
+  {
+    value: WORLDBOOK_MAINTENANCE_MODES.REFINE,
+    label: '完善选中',
+    description: '围绕已选条目改写'
+  }
+]
+
+const editorTab = ref('base')
+const editorTabs = [
+  { key: 'base', label: '基础设定', icon: 'book' },
+  { key: 'transfer', label: '导入导出', icon: 'download' },
+  { key: 'groups', label: '分组管理', icon: 'archive' },
+  { key: 'entries', label: '条目管理', icon: 'bookmark-plus' }
+]
+
+const selectedWorldbookId = ref('')
+// 项目上下文（联动闭环 L3）：先解析正确的世界书，再处理 entryId 定位。
+const { context, loading: contextLoading, loadError } = useSettingsProjectContext({ worldStore })
+const isProjectMode = computed(() => context.value?.mode === 'project')
+const projectContextLabel = computed(() => context.value?.book?.title || '')
+const projectContextStatus = computed(() => context.value?.status || '')
+const contextNotice = computed(() => (context.value?.status === 'route-mismatch' ? context.value.notice : ''))
+// query 指向的条目在正确库里仍不存在：明确提示，不静默选中第一条冒充目标。
+const requestedEntryMissing = ref(false)
+
+const maintenanceCandidateCount = computed(() => findWorldbookAuditTargets(entries.value, {
+  brief: maintenanceBrief.value
+}).length)
+const maintenanceStale = computed(() => Boolean(maintenanceRevision.value)
+  && String(activeWorldbook.value?.updatedAt || '') !== maintenanceRevision.value)
+const maintenancePlaceholder = computed(() => {
+  if (maintenanceMode.value === WORLDBOOK_MAINTENANCE_MODES.AUDIT) {
+    return '可选：补充审查重点，例如“重点检查角色关系和历史年代是否冲突”。'
+  }
+  if (maintenanceMode.value === WORLDBOOK_MAINTENANCE_MODES.REFINE) {
+    return '例如：保留已有时间线，补充这个势力与北境盐路的利益关系，不要创造新年代。'
+  }
+  return '例如：增加一个控制北境盐路的商会，和霜港存在利益冲突，但不要改变已有历史。'
+})
+const maintenanceActionLabel = computed(() => {
+  if (maintenanceMode.value === WORLDBOOK_MAINTENANCE_MODES.AUDIT) return '开始审查'
+  if (maintenanceMode.value === WORLDBOOK_MAINTENANCE_MODES.REFINE) return '生成修改建议'
+  return '生成新增候选'
+})
+const maintenanceCanRun = computed(() => {
+  if (maintenanceWorking.value) return false
+  if (maintenanceMode.value === WORLDBOOK_MAINTENANCE_MODES.REFINE) {
+    return selectedEntryIds.value.length > 0 && Boolean(maintenanceBrief.value.trim())
+  }
+  if (maintenanceMode.value === WORLDBOOK_MAINTENANCE_MODES.AUDIT) return maintenanceCandidateCount.value > 0
+  return Boolean(maintenanceBrief.value.trim())
+})
+
+const worldbookForm = reactive({
+  name: '',
+  author: '',
+  worldDescription: '',
+  writingStyle: '',
+  examples: '',
+  forbidden: '',
+  description: ''
+})
+
+const entryForm = reactive({
+  name: '',
+  type: 'general',
+  keys: '',
+  keysSecondary: '',
+  content: '',
+  speechStyle: '',
+  samples: [],
+  injectionMode: 'selective',
+  injectionProbability: 100,
+  injectionCooldown: 0,
+  injectionDepth: 1,
+  excludeRecursion: false,
+  injectionGroup: '',
+  injectionSecondaryMode: 'any',
+  injectionWholeWord: false,
+  injectionCaseSensitive: false
+})
+
+const entryTypes = [
+  { value: 'general', label: '通用' },
+  { value: 'rule', label: '规则' },
+  { value: 'style', label: '风格' },
+  { value: 'forbidden', label: '禁忌' },
+  { value: 'location', label: '地点' },
+  { value: 'character', label: '角色' },
+  { value: 'organization', label: '组织' },
+  { value: 'item', label: '物品' },
+  { value: 'lore', label: '设定' },
+  { value: 'quest', label: '任务' },
+  { value: 'event', label: '事件' }
+]
+
+const injectionModes = [
+  { value: 'selective', label: '选择触发' },
+  { value: 'constant', label: '常量注入' }
+]
+
+const worldbooksIndex = computed(() => worldStore.worldbooksIndex || [])
+const activeWorldbook = computed(() => worldStore.activeWorldbook)
+const entries = computed(() => activeWorldbook.value?.entries || [])
+
+const availableGroups = computed(() => {
+  const pool = new Set()
+  for (const group of activeWorldbook.value?.groups || []) {
+    const normalized = normalizeGroupName(group)
+    if (normalized) pool.add(normalized)
+  }
+  for (const entry of entries.value) {
+    const normalized = normalizeGroupName(entry?.injection?.group)
+    if (normalized) pool.add(normalized)
+  }
+  return Array.from(pool)
+})
+
+const groupStats = computed(() => {
+  const counter = new Map()
+
+  for (const group of activeWorldbook.value?.groups || []) {
+    const normalized = normalizeGroupName(group)
+    if (!normalized || counter.has(normalized)) continue
+    counter.set(normalized, 0)
+  }
+
+  for (const entry of entries.value) {
+    const group = normalizeGroupName(entry?.injection?.group)
+    if (!group) continue
+    counter.set(group, (counter.get(group) || 0) + 1)
+  }
+
+  return Array.from(counter.entries())
+    .map(([name, entryCount]) => ({ name, entryCount }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+})
+
+const filteredEntries = computed(() => {
+  const keyword = entrySearch.value.toLowerCase()
+  return entries.value.filter((entry) => {
+    const matchType = entryTypeFilter.value === 'all' || entry.type === entryTypeFilter.value
+    const modeValue = normalizeInjection(entry?.injection).mode
+    const matchMode = injectionModeFilter.value === 'all' || modeValue === injectionModeFilter.value
+    const groupValue = String(entry?.injection?.group || '').trim()
+    const matchGroup = entryGroupFilter.value === 'all'
+      || (entryGroupFilter.value === '__none' ? !groupValue : groupValue === entryGroupFilter.value)
+    const matchKeyword = !keyword || [
+      entry.name,
+      entry.content,
+      ...(entry.keys || []),
+      ...(entry.keysSecondary || [])
+    ]
+      .map(v => String(v || '').toLowerCase())
+      .some(v => v.includes(keyword))
+
+    return matchType && matchMode && matchGroup && matchKeyword
+  })
+})
+
+const selectedEntry = computed(() => {
+  return entries.value.find(e => e.id === selectedEntryId.value) || null
+})
+
+watch(activeWorldbook, (next) => {
+  selectedWorldbookId.value = next?.id || ''
+  syncWorldbookForm(next)
+  selectFirstEntry()
+  selectedEntryIds.value = []
+  groupDraftName.value = ''
+  groupRenameTarget.value = ''
+  groupMoveTarget.value = ''
+  clearGroupMessages()
+}, { immediate: true })
+
+watch(selectedEntry, (entry) => {
+  if (entry) syncEntryForm(entry)
+  else resetEntryForm()
+}, { immediate: true })
+
+watch(entries, (nextEntries) => {
+  const idSet = new Set(nextEntries.map(entry => entry.id))
+  selectedEntryIds.value = selectedEntryIds.value.filter(id => idSet.has(id))
+  if (selectedEntryId.value && !idSet.has(selectedEntryId.value)) {
+    selectFirstEntry()
+  }
+}, { deep: true })
+
+watch(availableGroups, (groups) => {
+  if (entryGroupFilter.value === 'all' || entryGroupFilter.value === '__none') return
+  if (!groups.includes(entryGroupFilter.value)) {
+    entryGroupFilter.value = 'all'
+  }
+})
+
+watch(groupStats, (stats) => {
+  const names = stats.map(item => item.name)
+
+  if (!names.length) {
+    groupRenameSource.value = ''
+    groupMoveSource.value = ''
+    groupDeleteSource.value = ''
+    return
+  }
+
+  if (!names.includes(groupRenameSource.value)) {
+    groupRenameSource.value = names[0]
+  }
+
+  if (!names.includes(groupMoveSource.value)) {
+    groupMoveSource.value = names[0]
+  }
+
+  if (!names.includes(groupDeleteSource.value)) {
+    groupDeleteSource.value = names[0]
+  }
+
+  if (!normalizeGroupName(groupMoveTarget.value)) {
+    groupMoveTarget.value = names.find(name => name !== groupMoveSource.value) || ''
+  }
+}, { immediate: true })
+
+watch(
+  () => [String(route.query.entryId || ''), entries.value.map((entry) => entry.id).join('|'), contextLoading.value],
+  async ([entryId]) => {
+    if (!entryId || contextLoading.value) return
+    if (!entries.value.some((entry) => entry.id === entryId)) {
+      // 在正确库里也找不到：明确「已不存在」，保留目录与回程，不冒充目标。
+      requestedEntryMissing.value = true
+      return
+    }
+    requestedEntryMissing.value = false
+    editorTab.value = 'entries'
+    entrySearch.value = ''
+    entryTypeFilter.value = 'all'
+    injectionModeFilter.value = 'all'
+    entryGroupFilter.value = 'all'
+    selectedEntryId.value = entryId
+    await nextTick()
+    const target = Array.from(document.querySelectorAll('[data-entry-id]'))
+      .find((element) => element.dataset.entryId === entryId)
+    target?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
+  },
+  { immediate: true }
+)
+
+function clampNumber(value, fallback, min, max) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(max, Math.max(min, parsed))
+}
+
+function toStringArray(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map(item => String(item || '').trim())
+      .filter(Boolean)
+  }
+  const normalized = String(value || '').trim()
+  return normalized ? [normalized] : []
+}
+
+function detectEntryType(keys, content, name = '') {
+  if (typeof worldStore.guessEntryType === 'function') {
+    return worldStore.guessEntryType(keys, content, name)
+  }
+  return 'general'
+}
+
+function inferPreviewInjectionMode(rawEntry, type) {
+  const modeText = String(rawEntry?.mode || '').trim().toLowerCase()
+  if (rawEntry?.constant === true || modeText === 'constant') return 'constant'
+  if (['rule', 'style', 'forbidden'].includes(type)) return 'constant'
+  return 'selective'
+}
+
+function normalizePreview(rawData, fileName) {
+  if (!rawData || typeof rawData !== 'object' || Array.isArray(rawData)) {
+    throw new Error('JSON 结构无效：需要对象根节点')
+  }
+
+  const rawEntries = rawData.entries || rawData.entry || {}
+  const entryPairs = Array.isArray(rawEntries)
+    ? rawEntries.map((entry, idx) => [String(idx), entry])
+    : (rawEntries && typeof rawEntries === 'object' ? Object.entries(rawEntries) : [])
+
+  if (!entryPairs.length) {
+    throw new Error('未检测到可导入的 entries 数据')
+  }
+
+  const previewEntries = entryPairs.map(([uid, entry]) => {
+    const keys = toStringArray(entry?.key)
+    const keysSecondary = toStringArray(entry?.keysecondary)
+    const type = detectEntryType(keys, String(entry?.content || ''), String(entry?.comment || uid || ''))
+    const mode = inferPreviewInjectionMode(entry, type)
+    const group = String(entry?.group || '').trim() || null
+
+    return {
+      uid,
+      name: String(entry?.comment || keys[0] || uid || '未命名条目'),
+      type,
+      mode,
+      group,
+      keyCount: keys.length + keysSecondary.length
+    }
+  })
+
+  const typeCounter = new Map()
+  const groupSet = new Set()
+
+  for (const entry of previewEntries) {
+    typeCounter.set(entry.type, (typeCounter.get(entry.type) || 0) + 1)
+    if (entry.group) groupSet.add(entry.group)
+  }
+
+  for (const group of Array.isArray(rawData.groups) ? rawData.groups : []) {
+    const normalized = String(group || '').trim()
+    if (normalized) groupSet.add(normalized)
+  }
+
+  const typeStats = Array.from(typeCounter.entries())
+    .map(([type, count]) => ({
+      type,
+      label: entryTypeLabel(type),
+      count
+    }))
+    .sort((a, b) => b.count - a.count)
+
+  return {
+    fileName,
+    name: String(rawData.name || rawData.world_name || '导入世界书'),
+    author: String(rawData.creator || rawData.author || ''),
+    entryCount: previewEntries.length,
+    groupCount: groupSet.size,
+    typeStats,
+    previewEntries: previewEntries.slice(0, 10),
+    rawData
+  }
+}
+
+function normalizeInjection(injection = {}) {
+  const mode = injection?.mode === 'constant' ? 'constant' : 'selective'
+  return {
+    mode,
+    probability: clampNumber(injection?.probability, 100, 0, 100),
+    cooldown: clampNumber(injection?.cooldown, 0, 0, 99999),
+    depth: clampNumber(injection?.depth, 1, 1, 99),
+    excludeRecursion: Boolean(injection?.excludeRecursion),
+    group: String(injection?.group || '').trim() || null,
+    // R3：激活语义字段（builder 已支持，编辑 UI 补全）
+    secondaryMode: injection?.secondaryMode === 'all' ? 'all' : 'any',
+    wholeWord: Boolean(injection?.wholeWord),
+    caseSensitive: Boolean(injection?.caseSensitive)
+  }
+}
+
+function splitKeywords(input) {
+  return String(input || '')
+    .split(/[\n,，]/)
+    .map(v => v.trim())
+    .filter(Boolean)
+}
+
+function normalizeGroupName(value) {
+  return String(value || '').trim()
+}
+
+function uniqueGroups(groups = []) {
+  const result = []
+  const seen = new Set()
+
+  for (const group of groups) {
+    const normalized = normalizeGroupName(group)
+    if (!normalized || seen.has(normalized)) continue
+    seen.add(normalized)
+    result.push(normalized)
+  }
+
+  return result
+}
+
+function clearGroupMessages() {
+  groupError.value = ''
+  groupSuccess.value = ''
+}
+
+function setGroupError(message) {
+  groupError.value = formatWorldbookStatus(message)
+  groupSuccess.value = ''
+}
+
+function setGroupSuccess(message) {
+  groupSuccess.value = formatWorldbookStatus(message)
+  groupError.value = ''
+}
+
+function setTransferError(message) {
+  importError.value = formatWorldbookStatus(message)
+  transferMessage.value = ''
+}
+
+function setTransferSuccess(message) {
+  transferMessage.value = formatWorldbookStatus(message)
+  importError.value = ''
+}
+
+function getCurrentWorldbookGroups() {
+  return uniqueGroups(activeWorldbook.value?.groups || [])
+}
+
+function getEntryIdsByGroup(groupName) {
+  const normalizedGroup = normalizeGroupName(groupName)
+  if (!normalizedGroup) return []
+
+  return entries.value
+    .filter(entry => normalizeGroupName(entry?.injection?.group) === normalizedGroup)
+    .map(entry => entry.id)
+}
+
+function entryTypeLabel(typeValue) {
+  const matched = entryTypes.find(t => t.value === typeValue)
+  return matched?.label || typeValue || '通用'
+}
+
+function entryModeLabel(modeValue) {
+  const mode = normalizeInjection({ mode: modeValue }).mode
+  const matched = injectionModes.find(item => item.value === mode)
+  return matched?.label || '选择触发'
+}
+
+function syncWorldbookForm(worldbook) {
+  worldbookForm.name = worldbook?.name || ''
+  worldbookForm.author = worldbook?.author || ''
+  worldbookForm.worldDescription = worldbook?.worldDescription || worldbook?.description || ''
+  worldbookForm.writingStyle = worldbook?.writingStyle || ''
+  worldbookForm.examples = worldbook?.examples || ''
+  worldbookForm.forbidden = worldbook?.forbidden || ''
+  worldbookForm.description = worldbook?.description || ''
+}
+
+function syncEntryForm(entry) {
+  const injection = normalizeInjection(entry?.injection)
+  entryForm.name = entry?.name || ''
+  entryForm.type = entry?.type || 'general'
+  entryForm.keys = (entry?.keys || []).join(', ')
+  entryForm.keysSecondary = (entry?.keysSecondary || []).join(', ')
+  entryForm.content = entry?.content || ''
+  const voice = normalizeNarrativeVoiceProfile(entry || {}, entryForm.name)
+  entryForm.speechStyle = voice.speechStyle
+  entryForm.samples = [...voice.samples]
+  entryForm.injectionMode = injection.mode
+  entryForm.injectionProbability = injection.probability
+  entryForm.injectionCooldown = injection.cooldown
+  entryForm.injectionDepth = injection.depth
+  entryForm.excludeRecursion = injection.excludeRecursion
+  entryForm.injectionGroup = injection.group || ''
+  // R3：激活语义字段回填
+  entryForm.injectionSecondaryMode = injection.secondaryMode || 'any'
+  entryForm.injectionWholeWord = Boolean(injection.wholeWord)
+  entryForm.injectionCaseSensitive = Boolean(injection.caseSensitive)
+}
+
+function resetEntryForm() {
+  entryForm.name = ''
+  entryForm.type = 'general'
+  entryForm.keys = ''
+  entryForm.keysSecondary = ''
+  entryForm.content = ''
+  entryForm.speechStyle = ''
+  entryForm.samples = []
+  entryForm.injectionMode = 'selective'
+  entryForm.injectionProbability = 100
+  entryForm.injectionCooldown = 0
+  entryForm.injectionDepth = 1
+  entryForm.excludeRecursion = false
+  entryForm.injectionGroup = ''
+}
+
+function selectFirstEntry() {
+  const first = entries.value[0]
+  selectedEntryId.value = first?.id || ''
+}
+
+function toggleMaintenance() {
+  maintenanceOpen.value = !maintenanceOpen.value
+  if (!maintenanceOpen.value) return
+  maintenanceError.value = ''
+  maintenanceCompleted.value = false
+}
+
+function resetMaintenanceResults() {
+  maintenanceError.value = ''
+  maintenanceSummary.value = ''
+  maintenanceCandidates.value = []
+  maintenanceRevision.value = ''
+  maintenanceTouchedEntryIds.value = new Set()
+  maintenanceCompleted.value = false
+}
+
+function maintenanceActionLabelFor(action) {
+  return {
+    create: '新增候选',
+    update: '改写建议',
+    merge: '合并建议',
+    retag: '整理标签',
+    conflict: '潜在冲突',
+    ignore: '建议保留'
+  }[action] || '审查结果'
+}
+
+function prepareMaintenanceCandidate(candidate) {
+  if (!candidate?.proposedEntry) return candidate
+  return {
+    ...candidate,
+    editing: false,
+    editor: {
+      ...candidate.proposedEntry,
+      keysText: candidate.proposedEntry.keys.join(', '),
+      keysSecondaryText: candidate.proposedEntry.keysSecondary.join(', ')
+    }
+  }
+}
+
+function toggleMaintenanceCandidateEdit(candidate) {
+  if (!candidate?.editor) return
+  candidate.editing = !candidate.editing
+}
+
+function getMaintenanceCandidateProposal(candidate) {
+  if (!candidate?.editor) return candidate?.proposedEntry || null
+  return {
+    name: String(candidate.editor.name || '').trim(),
+    type: candidate.editor.type,
+    keys: splitKeywords(candidate.editor.keysText),
+    keysSecondary: splitKeywords(candidate.editor.keysSecondaryText),
+    content: String(candidate.editor.content || '').trim(),
+    group: String(candidate.editor.group || '').trim(),
+    mode: candidate.editor.mode
+  }
+}
+
+function entryName(entryId) {
+  return entries.value.find((entry) => entry.id === entryId)?.name || entryId
+}
+
+async function runMaintenance() {
+  if (!activeWorldbook.value?.id || !maintenanceCanRun.value) return
+  maintenanceWorking.value = true
+  maintenanceError.value = ''
+  maintenanceSummary.value = ''
+  maintenanceCandidates.value = []
+  maintenanceTouchedEntryIds.value = new Set()
+  maintenanceCompleted.value = false
+  const sourceWorldbook = activeWorldbook.value
+  try {
+    const dispatched = await settingsDispatcher.dispatch('settings.maintenance.audit', {
+      project: { id: sourceWorldbook.id, revision: String(sourceWorldbook.updatedAt || '') },
+      target: { type: 'worldbook', id: sourceWorldbook.id, revision: String(sourceWorldbook.updatedAt || '') },
+      intent: {
+        worldbook: sourceWorldbook,
+        mode: maintenanceMode.value,
+        brief: maintenanceBrief.value,
+        selectedEntryIds: selectedEntryIds.value
+      }
+    })
+    if (dispatched.status !== 'completed') {
+      maintenanceError.value = dispatched.error?.message || dispatched.error?.code || '世界书处理失败。'
+      return
+    }
+    const auditResult = dispatched.suggestions?.[0] || {}
+    maintenanceRevision.value = String(auditResult.sourceRevision || sourceWorldbook.updatedAt || '')
+    maintenanceSummary.value = auditResult.summary || '已生成候选，请逐项审阅。'
+    maintenanceCandidates.value = (auditResult.candidates || []).map(prepareMaintenanceCandidate)
+    maintenanceCompleted.value = true
+  } catch (error) {
+    maintenanceError.value = error?.message || '世界书处理失败。'
+  } finally {
+    maintenanceWorking.value = false
+  }
+}
+
+function maintenanceRevisionIsCurrent() {
+  const currentRevision = String(activeWorldbook.value?.updatedAt || '')
+  return Boolean(maintenanceRevision.value) && currentRevision === maintenanceRevision.value
+}
+
+function maintenanceCandidateTouchesAppliedEntry(candidate) {
+  return (candidate?.entryIds || []).some((entryId) => maintenanceTouchedEntryIds.value.has(entryId))
+}
+
+function proposedEntryPayload(proposedEntry, existing = null) {
+  const injection = existing?.injection || {}
+  return {
+    name: proposedEntry.name,
+    type: proposedEntry.type,
+    keys: proposedEntry.keys,
+    keysSecondary: proposedEntry.keysSecondary,
+    content: proposedEntry.content,
+    injection: {
+      ...injection,
+      mode: proposedEntry.mode,
+      group: proposedEntry.group || injection.group || null
+    }
+  }
+}
+
+async function applyMaintenanceCandidate(candidate) {
+  if (!activeWorldbook.value?.id || !candidate || candidate.status !== 'pending') return
+  if (candidate.action === 'ignore' || candidate.action === 'conflict') {
+    candidate.status = 'applied'
+    return
+  }
+  if (!maintenanceRevisionIsCurrent()) {
+    maintenanceError.value = '世界书已经发生变化，这批建议已过期，请重新审查。'
+    return
+  }
+  if (maintenanceCandidateTouchesAppliedEntry(candidate)) {
+    maintenanceError.value = '这条建议涉及本批次中已经修改过的条目，请重新审查后再采纳，避免旧建议覆盖刚保存的内容。'
+    return
+  }
+
+  maintenanceApplying.value = true
+  maintenanceError.value = ''
+  try {
+    const proposal = getMaintenanceCandidateProposal(candidate)
+    if (!proposal) throw new Error('建议内容为空，请先编辑或重新生成。')
+
+    if (candidate.action === 'create') {
+      await worldStore.addEntry(activeWorldbook.value.id, {
+        ...proposal,
+        injection: {
+          mode: proposal.mode,
+          probability: proposal.mode === 'constant' ? 100 : 100,
+          cooldown: 0,
+          depth: proposal.mode === 'constant' ? 2 : 1,
+          excludeRecursion: false,
+          group: proposal.group || null
+        },
+        metadata: { importSource: 'worldbook-maintenance', basis: 'creative' }
+      })
+    } else {
+      const targetIds = candidate.entryIds.filter((id) => entries.value.some((entry) => entry.id === id))
+      const primaryId = targetIds[0]
+      const primary = entries.value.find((entry) => entry.id === primaryId)
+      if (!primary) throw new Error('建议对应的条目已经不存在。')
+      await worldStore.updateEntry(activeWorldbook.value.id, primaryId, proposedEntryPayload(proposal, primary))
+      if (candidate.action === 'merge') {
+        for (const entryId of targetIds.slice(1)) {
+          await worldStore.deleteEntry(activeWorldbook.value.id, entryId)
+        }
+      }
+    }
+    await worldStore.loadWorldbooksIndex()
+    maintenanceTouchedEntryIds.value = new Set([
+      ...maintenanceTouchedEntryIds.value,
+      ...(candidate.entryIds || [])
+    ])
+    maintenanceRevision.value = String(activeWorldbook.value?.updatedAt || maintenanceRevision.value)
+    candidate.status = 'applied'
+  } catch (error) {
+    maintenanceError.value = error?.message || '采纳世界书建议失败。'
+  } finally {
+    maintenanceApplying.value = false
+  }
+}
+
+function ignoreMaintenanceCandidate(candidate) {
+  if (!candidate || candidate.status !== 'pending') return
+  candidate.status = 'ignored'
+}
+
+async function onWorldbookChange(worldbookId) {
+  // 项目模式：世界书由书稿关联决定，不在这里静默换库。
+  if (isProjectMode.value) return
+  await worldStore.setActiveWorldbook(worldbookId)
+}
+
+async function createWorldbook() {
+  const nextName = `世界书 ${worldbooksIndex.value.length + 1}`
+  const created = await worldStore.createWorldbook({ name: nextName })
+  await worldStore.loadWorldbooksIndex()
+  if (created?.id) {
+    await worldStore.setActiveWorldbook(created.id)
+  }
+}
+
+async function saveWorldbook() {
+  if (!activeWorldbook.value?.id || !worldbookForm.name.trim()) return
+  savingWorldbook.value = true
+  try {
+    await worldStore.updateWorldbook(activeWorldbook.value.id, {
+      name: worldbookForm.name.trim(),
+      author: worldbookForm.author.trim(),
+      worldDescription: worldbookForm.worldDescription.trim(),
+      writingStyle: worldbookForm.writingStyle.trim(),
+      examples: worldbookForm.examples.trim(),
+      forbidden: worldbookForm.forbidden.trim(),
+      description: worldbookForm.worldDescription.trim() // 兼容旧字段
+    })
+    await worldStore.loadWorldbooksIndex()
+  } finally {
+    savingWorldbook.value = false
+  }
+}
+
+async function deleteWorldbook() {
+  if (!activeWorldbook.value?.id) return
+  const ok = window.confirm(`确认删除世界书「${activeWorldbook.value.name || '未命名'}」？`)
+  if (!ok) return
+
+  await worldStore.deleteWorldbook(activeWorldbook.value.id)
+  await worldStore.loadWorldbooksIndex()
+  if (typeof worldStore.ensureActiveWorldbook === 'function') {
+    await worldStore.ensureActiveWorldbook()
+  }
+}
+
+async function createEntry() {
+  if (!activeWorldbook.value?.id) return
+  const initialGroup = entryGroupFilter.value !== 'all' && entryGroupFilter.value !== '__none'
+    ? entryGroupFilter.value
+    : null
+  const created = await worldStore.addEntry(activeWorldbook.value.id, {
+    name: '新条目',
+    type: 'general',
+    keys: [],
+    keysSecondary: [],
+    content: '',
+    injection: {
+      mode: 'selective',
+      probability: 100,
+      cooldown: 0,
+      depth: 1,
+      excludeRecursion: false,
+      group: initialGroup
+    }
+  })
+  await worldStore.loadWorldbooksIndex()
+  if (initialGroup) {
+    await persistWorldbookGroups([initialGroup])
+  }
+  if (created?.id) selectedEntryId.value = created.id
+}
+
+async function saveEntry() {
+  if (!activeWorldbook.value?.id || !selectedEntry.value) return
+  savingEntry.value = true
+  try {
+    const normalizedInjection = normalizeInjection({
+      mode: entryForm.injectionMode,
+      probability: entryForm.injectionProbability,
+      cooldown: entryForm.injectionCooldown,
+      depth: entryForm.injectionDepth,
+      excludeRecursion: entryForm.excludeRecursion,
+      group: entryForm.injectionGroup,
+      secondaryMode: entryForm.injectionSecondaryMode,
+      wholeWord: entryForm.injectionWholeWord,
+      caseSensitive: entryForm.injectionCaseSensitive
+    })
+
+    await worldStore.updateEntry(activeWorldbook.value.id, selectedEntry.value.id, {
+      name: entryForm.name.trim() || '未命名条目',
+      type: entryForm.type,
+      keys: splitKeywords(entryForm.keys),
+      keysSecondary: splitKeywords(entryForm.keysSecondary),
+      content: entryForm.content.trim(),
+      ...normalizeNarrativeVoiceProfile({
+        speechStyle: entryForm.speechStyle,
+        samples: entryForm.samples
+      }, entryForm.name),
+      injection: normalizedInjection
+    })
+    await worldStore.loadWorldbooksIndex()
+    if (normalizedInjection.group) {
+      await persistWorldbookGroups([normalizedInjection.group])
+    }
+  } finally {
+    savingEntry.value = false
+  }
+}
+
+async function deleteEntry() {
+  if (!activeWorldbook.value?.id || !selectedEntry.value?.id) return
+  const ok = window.confirm(`确认删除条目「${selectedEntry.value.name || '未命名条目'}」？`)
+  if (!ok) return
+
+  await worldStore.deleteEntry(activeWorldbook.value.id, selectedEntry.value.id)
+  await worldStore.loadWorldbooksIndex()
+  selectFirstEntry()
+}
+
+function pickEntry(entryId) {
+  selectedEntryId.value = entryId
+}
+
+function isEntrySelected(entryId) {
+  return selectedEntryIds.value.includes(entryId)
+}
+
+function toggleEntrySelection(entryId, checked) {
+  const selected = new Set(selectedEntryIds.value)
+  if (checked) selected.add(entryId)
+  else selected.delete(entryId)
+  selectedEntryIds.value = Array.from(selected)
+}
+
+function selectAllFilteredEntries() {
+  const selected = new Set(selectedEntryIds.value)
+  for (const entry of filteredEntries.value) {
+    selected.add(entry.id)
+  }
+  selectedEntryIds.value = Array.from(selected)
+}
+
+function invertFilteredSelection() {
+  const selected = new Set(selectedEntryIds.value)
+  for (const entry of filteredEntries.value) {
+    if (selected.has(entry.id)) selected.delete(entry.id)
+    else selected.add(entry.id)
+  }
+  selectedEntryIds.value = Array.from(selected)
+}
+
+function clearEntrySelection() {
+  selectedEntryIds.value = []
+}
+
+async function updateEntriesByIds(entryIds, updater) {
+  if (!activeWorldbook.value?.id || !entryIds.length) return
+
+  for (const entryId of entryIds) {
+    const entry = entries.value.find(item => item.id === entryId)
+    if (!entry) continue
+    const payload = updater(entry)
+    if (!payload) continue
+    await worldStore.updateEntry(activeWorldbook.value.id, entryId, payload)
+  }
+
+  await worldStore.loadWorldbooksIndex()
+  await worldStore.setActiveWorldbook(activeWorldbook.value.id)
+}
+
+async function applyBulkMode() {
+  if (!selectedEntryIds.value.length) return
+  savingEntry.value = true
+  try {
+    await updateEntriesByIds(selectedEntryIds.value, (entry) => {
+      return {
+        injection: {
+          ...normalizeInjection(entry.injection),
+          mode: bulkModeTarget.value
+        }
+      }
+    })
+  } finally {
+    savingEntry.value = false
+  }
+}
+
+async function applyBulkGroup() {
+  if (!selectedEntryIds.value.length) return
+  savingEntry.value = true
+  try {
+    const groupValue = bulkGroupValue.value.trim()
+    await updateEntriesByIds(selectedEntryIds.value, (entry) => {
+      return {
+        injection: {
+          ...normalizeInjection(entry.injection),
+          group: groupValue || null
+        }
+      }
+    })
+    if (groupValue) {
+      await persistWorldbookGroups([groupValue])
+    }
+  } finally {
+    savingEntry.value = false
+  }
+}
+
+async function bulkDeleteEntries() {
+  if (!activeWorldbook.value?.id || !selectedEntryIds.value.length) return
+  const ok = window.confirm(`确认批量删除 ${selectedEntryIds.value.length} 条条目？`)
+  if (!ok) return
+
+  savingEntry.value = true
+  try {
+    const toDelete = [...selectedEntryIds.value]
+    for (const entryId of toDelete) {
+      await worldStore.deleteEntry(activeWorldbook.value.id, entryId)
+    }
+    await worldStore.loadWorldbooksIndex()
+    await worldStore.setActiveWorldbook(activeWorldbook.value.id)
+    selectedEntryIds.value = []
+    selectFirstEntry()
+  } finally {
+    savingEntry.value = false
+  }
+}
+
+async function persistWorldbookGroups(extraGroups = []) {
+  const currentGroups = getCurrentWorldbookGroups()
+  const nextGroups = uniqueGroups([...currentGroups, ...extraGroups])
+  await replaceWorldbookGroups(nextGroups)
+}
+
+async function replaceWorldbookGroups(nextGroups = []) {
+  if (!activeWorldbook.value?.id) return
+
+  const currentGroups = getCurrentWorldbookGroups()
+  const resolvedGroups = uniqueGroups(nextGroups)
+  const unchanged = resolvedGroups.length === currentGroups.length
+    && resolvedGroups.every(group => currentGroups.includes(group))
+
+  if (unchanged) return
+
+  await worldStore.updateWorldbook(activeWorldbook.value.id, {
+    groups: resolvedGroups
+  })
+  await worldStore.loadWorldbooksIndex()
+}
+
+async function createGroup() {
+  const nextGroup = normalizeGroupName(groupDraftName.value)
+  if (!nextGroup) {
+    setGroupError('请输入分组名称。')
+    return
+  }
+
+  const exists = groupStats.value.some(group => group.name === nextGroup)
+  if (exists) {
+    setGroupError(`分组「${nextGroup}」已存在。`)
+    return
+  }
+
+  groupWorking.value = true
+  clearGroupMessages()
+
+  try {
+    await persistWorldbookGroups([nextGroup])
+    groupDraftName.value = ''
+    groupRenameSource.value = nextGroup
+    groupMoveSource.value = nextGroup
+    groupDeleteSource.value = nextGroup
+    setGroupSuccess(`已创建分组「${nextGroup}」。`)
+  } catch (error) {
+    setGroupError(`创建分组失败：${error?.message || '未知错误'}`)
+  } finally {
+    groupWorking.value = false
+  }
+}
+
+async function renameGroup() {
+  const source = normalizeGroupName(groupRenameSource.value)
+  const target = normalizeGroupName(groupRenameTarget.value)
+
+  if (!source) {
+    setGroupError('请选择要重命名的分组。')
+    return
+  }
+
+  if (!target) {
+    setGroupError('请输入新的分组名称。')
+    return
+  }
+
+  if (source === target) {
+    setGroupError('新分组名称不能与原名称相同。')
+    return
+  }
+
+  const targetExists = groupStats.value.some(group => group.name === target)
+  const confirmText = targetExists
+    ? `目标分组「${target}」已存在，重命名将合并条目，是否继续？`
+    : `确认将分组「${source}」重命名为「${target}」？`
+
+  if (!window.confirm(confirmText)) return
+
+  groupWorking.value = true
+  clearGroupMessages()
+
+  try {
+    const sourceEntryIds = getEntryIdsByGroup(source)
+    if (sourceEntryIds.length) {
+      await updateEntriesByIds(sourceEntryIds, (entry) => {
+        return {
+          injection: {
+            ...normalizeInjection(entry.injection),
+            group: target
+          }
+        }
+      })
+    }
+
+    const nextGroups = uniqueGroups([
+      ...getCurrentWorldbookGroups().filter(group => group !== source),
+      target
+    ])
+    await replaceWorldbookGroups(nextGroups)
+
+    if (entryGroupFilter.value === source) {
+      entryGroupFilter.value = target
+    }
+    groupRenameSource.value = target
+    groupMoveSource.value = target
+    groupDeleteSource.value = target
+    groupRenameTarget.value = ''
+
+    setGroupSuccess(`已重命名分组「${source}」为「${target}」，同步更新 ${sourceEntryIds.length} 条条目。`)
+  } catch (error) {
+    setGroupError(`重命名分组失败：${error?.message || '未知错误'}`)
+  } finally {
+    groupWorking.value = false
+  }
+}
+
+async function migrateGroupEntries() {
+  const source = normalizeGroupName(groupMoveSource.value)
+  const target = normalizeGroupName(groupMoveTarget.value)
+
+  if (!source) {
+    setGroupError('请选择源分组。')
+    return
+  }
+
+  if (!target) {
+    setGroupError('请输入目标分组名称。')
+    return
+  }
+
+  if (source === target) {
+    setGroupError('目标分组不能与源分组相同。')
+    return
+  }
+
+  const dropSource = groupDropSourceAfterMove.value
+  const confirmText = dropSource
+    ? `确认将「${source}」的条目迁移到「${target}」，并删除源分组？`
+    : `确认将「${source}」的条目迁移到「${target}」并保留源分组？`
+  if (!window.confirm(confirmText)) return
+
+  groupWorking.value = true
+  clearGroupMessages()
+
+  try {
+    const sourceEntryIds = getEntryIdsByGroup(source)
+    if (sourceEntryIds.length) {
+      await updateEntriesByIds(sourceEntryIds, (entry) => {
+        return {
+          injection: {
+            ...normalizeInjection(entry.injection),
+            group: target
+          }
+        }
+      })
+    }
+
+    const nextGroups = uniqueGroups([
+      ...getCurrentWorldbookGroups().filter(group => !(dropSource && group === source)),
+      target
+    ])
+    await replaceWorldbookGroups(nextGroups)
+
+    if (entryGroupFilter.value === source && dropSource) {
+      entryGroupFilter.value = target
+    }
+    groupMoveSource.value = target
+    groupDeleteSource.value = dropSource ? target : groupDeleteSource.value
+
+    const suffix = dropSource ? '，并删除了源分组。' : '。'
+    setGroupSuccess(`已迁移 ${sourceEntryIds.length} 条条目到「${target}」${suffix}`)
+  } catch (error) {
+    setGroupError(`迁移分组失败：${error?.message || '未知错误'}`)
+  } finally {
+    groupWorking.value = false
+  }
+}
+
+async function deleteGroup() {
+  const source = normalizeGroupName(groupDeleteSource.value)
+  if (!source) {
+    setGroupError('请选择要删除的分组。')
+    return
+  }
+
+  const sourceEntryIds = getEntryIdsByGroup(source)
+  const confirmText = sourceEntryIds.length
+    ? `确认删除分组「${source}」？其中 ${sourceEntryIds.length} 条条目的分组将被清空。`
+    : `确认删除空分组「${source}」？`
+  if (!window.confirm(confirmText)) return
+
+  groupWorking.value = true
+  clearGroupMessages()
+
+  try {
+    if (sourceEntryIds.length) {
+      await updateEntriesByIds(sourceEntryIds, (entry) => {
+        return {
+          injection: {
+            ...normalizeInjection(entry.injection),
+            group: null
+          }
+        }
+      })
+    }
+
+    const nextGroups = getCurrentWorldbookGroups().filter(group => group !== source)
+    await replaceWorldbookGroups(nextGroups)
+
+    if (entryGroupFilter.value === source) {
+      entryGroupFilter.value = 'all'
+    }
+    setGroupSuccess(`已删除分组「${source}」，并清空 ${sourceEntryIds.length} 条条目的分组。`)
+  } catch (error) {
+    setGroupError(`删除分组失败：${error?.message || '未知错误'}`)
+  } finally {
+    groupWorking.value = false
+  }
+}
+
+async function pruneEmptyGroups() {
+  const emptyGroups = groupStats.value
+    .filter(group => group.entryCount === 0)
+    .map(group => group.name)
+
+  if (!emptyGroups.length) {
+    setGroupSuccess('没有可清理的空分组。')
+    return
+  }
+
+  const ok = window.confirm(`确认清理 ${emptyGroups.length} 个空分组？`)
+  if (!ok) return
+
+  groupWorking.value = true
+  clearGroupMessages()
+
+  try {
+    const keepGroups = groupStats.value
+      .filter(group => group.entryCount > 0)
+      .map(group => group.name)
+    await replaceWorldbookGroups(keepGroups)
+    setGroupSuccess(`已清理 ${emptyGroups.length} 个空分组。`)
+  } catch (error) {
+    setGroupError(`清理空分组失败：${error?.message || '未知错误'}`)
+  } finally {
+    groupWorking.value = false
+  }
+}
+
+function setEntryGroup(group) {
+  entryForm.injectionGroup = group
+}
+
+function addVoiceSample() {
+  if (entryForm.samples.length >= 6) return
+  entryForm.samples.push('')
+}
+
+function removeVoiceSample(index) {
+  entryForm.samples.splice(index, 1)
+}
+
+function openImportFilePicker() {
+  importError.value = ''
+  transferMessage.value = ''
+  if (importFileInputRef.value) {
+    importFileInputRef.value.value = ''
+    importFileInputRef.value.click()
+  }
+}
+
+async function handleImportFileChange(event) {
+  const file = event?.target?.files?.[0]
+  if (!file) return
+
+  importError.value = ''
+  transferMessage.value = ''
+  importing.value = true
+
+  try {
+    const text = await file.text()
+    const parsed = JSON.parse(text)
+    importPreview.value = normalizePreview(parsed, file.name)
+  } catch (error) {
+    importPreview.value = null
+    setTransferError(`导入预览失败：${error?.message || '未知错误'}`)
+  } finally {
+    importing.value = false
+  }
+}
+
+function clearImportPreview() {
+  importPreview.value = null
+  importError.value = ''
+}
+
+async function confirmImportFromPreview() {
+  if (!importPreview.value?.rawData) return
+
+  importing.value = true
+  importError.value = ''
+  transferMessage.value = ''
+
+  try {
+    const created = await worldStore.importFromSillyTavern(importPreview.value.rawData)
+    await worldStore.loadWorldbooksIndex()
+    if (created?.id) {
+      await worldStore.setActiveWorldbook(created.id)
+    }
+    importPreview.value = null
+    setTransferSuccess(`导入完成：${created?.name || '新世界书'}`)
+  } catch (error) {
+    setTransferError(`导入失败：${error?.message || '未知错误'}`)
+  } finally {
+    importing.value = false
+  }
+}
+
+function toSafeFilename(input) {
+  const cleaned = String(input || '')
+    .replace(/[\\/:*?"<>|]+/g, '_')
+    .trim()
+  return cleaned || 'worldbook'
+}
+
+async function exportActiveWorldbook() {
+  if (!activeWorldbook.value?.id) return
+
+  exporting.value = true
+  importError.value = ''
+  transferMessage.value = ''
+
+  try {
+    const payload = await worldStore.exportToSillyTavern(activeWorldbook.value.id)
+    const filename = `${toSafeFilename(activeWorldbook.value.name)}.json`
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' })
+    const objectUrl = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = objectUrl
+    anchor.download = filename
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(objectUrl)
+    setTransferSuccess(`导出完成：${filename}`)
+  } catch (error) {
+    setTransferError(`导出失败：${error?.message || '未知错误'}`)
+  } finally {
+    exporting.value = false
+  }
+}
+
+onMounted(async () => {
+  try {
+    await worldStore.loadWorldbooksIndex()
+    // 项目模式由 useSettingsProjectContext 按书绑定加载；全局模式保留既有 active 行为。
+    if (!isProjectMode.value && !context.value?.worldbookId) {
+      if (typeof worldStore.ensureActiveWorldbook === 'function') {
+        await worldStore.ensureActiveWorldbook()
+      } else if (worldbooksIndex.value.length > 0) {
+        await worldStore.setActiveWorldbook(worldbooksIndex.value[0].id)
+      }
+    }
+  } catch (e) {
+    console.error('[世界书·高级设置] 初始化失败:', e)
+  }
+})
+
+</script>
+
+<style scoped>
+.worldbook-page {
+  min-height: var(--app-viewport-height, 100vh);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.editor-topbar {
+  flex: 0 0 auto;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 62%, transparent);
+  background: color-mix(in srgb, var(--bg-primary) 96%, var(--accent));
+}
+
+.editor-topbar :deep(.settings-section-nav) {
+  border-bottom: 0;
+}
+
+.editor-layout {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px;
+  /* AppShell is height: 100vh + overflow: hidden; without an internal
+     scroll container, the create tab's stacked "novel snippet import" +
+     "AI generation worldbook" sections get clipped at the bottom.
+     Mirror StructuredSettings.vue .settings-body so the editor scrolls
+     inside the bounded shell. */
+  overflow: auto;
+}
+
+.entry-missing-strip {
+  margin: 10px clamp(16px, 3vw, 42px) 0;
+  padding: 8px 14px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-secondary) 70%, transparent);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.entry-missing-strip p {
+  margin: 0;
+}
+
+.editor-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: center;
+  padding: 32px 18px;
+}
+
+.editor-empty p {
+  margin: 0;
+}
+
+.editor-main {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.editor-main.empty {
+  background: var(--bg-secondary);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+
+.card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.card-head {
+  margin-bottom: 10px;
+}
+
+.card-head h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.card-head.split {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.worldbook-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.worldbook-form .full-width {
+  grid-column: 1 / -1;
+}
+
+.entry-tools {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.entry-tools .ghost-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-secondary));
+}
+
+.worldbook-maintenance {
+  margin: 4px 0 12px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg-primary));
+}
+
+.maintenance-head,
+.maintenance-actions,
+.candidate-head,
+.candidate-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.maintenance-head h3 {
+  margin: 3px 0 2px;
+  font-size: 15px;
+}
+
+.maintenance-head p,
+.maintenance-summary,
+.maintenance-empty,
+.candidate-reason,
+.candidate-links {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.panel-kicker,
+.maintenance-revision,
+.maintenance-scope {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.maintenance-modes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0 10px;
+}
+
+.maintenance-mode {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 9px 10px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.maintenance-mode span {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.maintenance-mode.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-secondary));
+  color: var(--text-primary);
+}
+
+.maintenance-brief {
+  min-height: 74px;
+  margin-bottom: 10px;
+}
+
+.maintenance-actions {
+  justify-content: flex-end;
+}
+
+.maintenance-actions .maintenance-scope {
+  margin-right: auto;
+}
+
+.maintenance-error {
+  margin-top: 10px;
+  color: #ef4444;
+  font-size: 12px;
+}
+
+.maintenance-stale {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-left: 2px solid #b7791f;
+  background: color-mix(in srgb, #b7791f 8%, var(--bg-primary));
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.maintenance-summary {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.maintenance-candidates {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.maintenance-candidate {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.maintenance-candidate.is-applied,
+.maintenance-candidate.is-ignored {
+  opacity: 0.62;
+}
+
+.candidate-action {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.candidate-confidence,
+.candidate-status {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.candidate-confidence.is-high {
+  color: #16805d;
+}
+
+.candidate-confidence.is-low {
+  color: #9b6b20;
+}
+
+.candidate-proposal {
+  padding-left: 9px;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 60%, var(--border));
+}
+
+.candidate-proposal strong,
+.candidate-proposal span {
+  display: block;
+}
+
+.candidate-proposal span {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.candidate-proposal p {
+  margin: 6px 0 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.candidate-edit-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 0.45fr);
+  gap: 7px;
+}
+
+.candidate-edit-form .text-area {
+  grid-column: 1 / -1;
+}
+
+.candidate-links {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hidden-file-input {
+  display: none;
+}
+
+.import-error,
+.import-success {
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.import-error {
+  border: 1px solid color-mix(in srgb, #ef4444 55%, var(--border));
+  background: color-mix(in srgb, #ef4444 12%, var(--bg-primary));
+  color: #ef4444;
+}
+
+.import-success {
+  border: 1px solid color-mix(in srgb, #10b981 55%, var(--border));
+  background: color-mix(in srgb, #10b981 12%, var(--bg-primary));
+  color: #10b981;
+}
+
+.import-preview {
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.import-preview-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.import-preview-head strong {
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.import-preview-head span {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.import-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.research-toggle {
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.research-toggle svg {
+  color: var(--accent);
+}
+
+.research-panel {
+  border-top: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  padding: 12px 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.research-panel__head,
+.research-preview__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.research-panel__head > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.research-panel__head strong,
+.research-preview__head strong {
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.research-panel__head span,
+.research-preview__head span,
+.research-note,
+.research-status {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.research-settings-grid {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.7fr) minmax(220px, 1.3fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.research-settings-grid > label:not(.compact-label) {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.research-number {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+}
+
+.research-number .compact {
+  width: 68px;
+}
+
+.research-note,
+.research-status {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.research-status {
+  color: var(--accent);
+}
+
+.research-status.error {
+  color: var(--danger, #ef4444);
+}
+
+.research-review {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 9px 10px;
+  border-left: 3px solid var(--warning, #b7791f);
+  background: color-mix(in srgb, var(--warning, #b7791f) 8%, transparent);
+}
+
+.research-review__copy {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.research-review__copy strong {
+  color: var(--text-primary);
+  font-size: 11px;
+}
+
+.research-review__copy span {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.research-conflict-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.research-conflict-list li {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.research-conflict-list span {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.research-conflict-list em {
+  color: var(--text-muted);
+  font-style: normal;
+}
+
+.research-claim-ledger {
+  display: grid;
+  gap: 5px;
+}
+
+.research-claim-ledger__label {
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.research-claim-ledger ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.research-claim-ledger li {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) minmax(74px, 0.4fr);
+  gap: 6px;
+  align-items: baseline;
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.research-claim-ledger li.stale {
+  color: var(--warning, #b7791f);
+}
+
+.research-claim-ledger b {
+  color: var(--accent);
+  font-size: 10px;
+}
+
+.research-claim-ledger small {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.research-review__hint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.research-review__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.research-preview {
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.research-incremental-note,
+.research-revision-note {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.research-revision-note {
+  color: var(--accent);
+}
+
+.research-source-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+}
+
+.research-source-list li {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: start;
+  column-gap: 6px;
+}
+
+.research-source-list li.excluded {
+  opacity: 0.58;
+}
+
+.research-source-id {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 20px;
+}
+
+.research-source-list a {
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 11px;
+  line-height: 20px;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.research-source-list a:hover {
+  color: var(--accent);
+}
+
+.research-source-title {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 20px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.research-source-list a svg {
+  margin-left: 3px;
+  vertical-align: -2px;
+}
+
+.research-source-list p {
+  grid-column: 2;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.research-source-locator {
+  grid-column: 2;
+  color: var(--text-secondary);
+  font-size: 9px;
+  line-height: 14px;
+}
+
+.research-source-evidence {
+  grid-column: 2;
+  color: var(--accent);
+  font-size: 9px;
+  line-height: 14px;
+}
+
+.research-source-exclude {
+  grid-column: 2;
+  justify-self: start;
+  margin-top: 2px;
+}
+
+.meta-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.meta-item span {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.meta-item strong {
+  font-size: 13px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.import-type-list {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.type-chip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.preview-entry-list {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.preview-entry-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.preview-entry-item:last-child {
+  border-bottom: none;
+}
+
+.preview-entry-name {
+  font-size: 12px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.preview-entry-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.group-overview {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 10px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.group-overview-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.group-overview-item:last-child {
+  border-bottom: none;
+}
+
+.group-overview-item span {
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.group-overview-item strong {
+  color: var(--text-secondary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.group-overview-item.empty span,
+.group-overview-item.empty strong {
+  color: var(--text-muted);
+}
+
+.group-manager-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.group-manager-block {
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.group-manager-block h3 {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.group-manager-block.danger {
+  border-color: color-mix(in srgb, #ef4444 45%, var(--border));
+}
+
+.group-form-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.group-form-row .text-input,
+.group-form-row .select-input {
+  min-width: 150px;
+  flex: 1;
+}
+
+.bulk-tools {
+  margin-bottom: 10px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.bulk-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.select-input.compact,
+.text-input.compact {
+  width: auto;
+  min-width: 110px;
+}
+
+.entry-layout {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 12px;
+  min-height: 320px;
+}
+
+.entry-list {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.entry-item {
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  border-radius: 8px;
+  color: var(--text-primary);
+  padding: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.entry-item.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-primary));
+}
+
+.entry-checkbox {
+  margin-top: 2px;
+}
+
+.entry-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.entry-title {
+  font-size: 12px;
+  font-weight: 600;
+  display: block;
+  word-break: break-all;
+}
+
+.entry-badges {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.entry-type,
+.entry-mode,
+.entry-group {
+  font-size: 11px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 6px;
+}
+
+.entry-group {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.entry-editor {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.entry-editor.empty {
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.text-input,
+.select-input,
+.text-area,
+.search-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.text-area {
+  resize: vertical;
+}
+
+.injection-panel {
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.injection-panel h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.injection-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.injection-grid .full-row {
+  grid-column: 1 / -1;
+}
+
+.checkbox-line {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.checkbox-line.inline {
+  margin-top: 0;
+}
+
+.group-quick {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.group-quick-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.group-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.group-chip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.group-chip.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.primary-btn,
+.ghost-btn,
+.danger-btn {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  height: 34px;
+  padding: 0 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.small {
+  height: 30px;
+  padding: 0 10px;
+}
+
+.primary-btn {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.primary-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+/* W5c UX sweep: when the worldbook base form has unsaved changes,
+   the "保存世界书" button should pulse so users notice it before
+   they switch worldbooks / tabs / close the page. */
+.primary-btn.is-dirty {
+  animation: wbe-dirty-pulse 1.6s ease-in-out infinite;
+}
+@keyframes wbe-dirty-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--warning) 60%, transparent); }
+  50%      { box-shadow: 0 0 0 6px color-mix(in srgb, var(--warning) 0%,  transparent); }
+}
+
+.ghost-btn {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.danger-btn {
+  background: transparent;
+  color: #ef4444;
+  border-color: color-mix(in srgb, #ef4444 70%, var(--border));
+}
+
+.empty-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 8px;
+}
+
+.editor-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.editor-tab {
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  border-radius: 6px;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+
+.editor-tab.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-secondary));
+}
+
+/* W5 UX sweep: editor tab focus-visible so keyboard nav is obvious. */
+.editor-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+@media (max-width: 1080px) {
+  .editor-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .entry-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .worldbook-form {
+    grid-template-columns: 1fr;
+  }
+
+  .injection-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .import-meta-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .research-settings-grid,
+  .research-source-list {
+    grid-template-columns: 1fr;
+  }
+
+  .research-source-list li {
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+
+  .maintenance-candidates {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .maintenance-modes {
+    grid-template-columns: 1fr;
+  }
+
+  .maintenance-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .maintenance-actions .maintenance-scope {
+    margin-right: 0;
+  }
+
+  .candidate-edit-form {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Settings 3rd pass: the advanced page is a work surface, not a stack of
+   dashboard cards. Keep the existing controls and data flow, but give the
+   page one quiet frame and let the active edge carry hierarchy. */
+.worldbook-page {
+  background: color-mix(in srgb, var(--bg-primary) 96%, var(--accent));
+}
+
+.editor-layout {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  padding: 18px clamp(14px, 3vw, 42px) 34px;
+}
+
+.editor-main {
+  gap: 0;
+  min-width: 0;
+}
+
+.editor-tabs {
+  flex-wrap: nowrap;
+  gap: 3px;
+  margin: 0 0 20px;
+  overflow-x: auto;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 62%, transparent);
+  scrollbar-width: thin;
+}
+
+.editor-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  flex: 0 0 auto;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 0 10px 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.editor-tab svg {
+  color: var(--text-muted);
+}
+
+.editor-tab:hover {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  color: var(--text-primary);
+}
+
+.editor-tab.active {
+  border-bottom-color: var(--accent);
+  background: transparent;
+  color: var(--accent);
+}
+
+.editor-tab.active svg {
+  color: var(--accent);
+}
+
+.editor-main > .card {
+  padding: 0 0 24px;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 62%, transparent);
+  border-radius: 0;
+  background: transparent;
+}
+
+.editor-main > .card > .card-head {
+  margin-bottom: 18px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 52%, transparent);
+}
+
+.editor-main > .card > .card-head h2 {
+  font-size: 20px;
+  font-weight: 680;
+}
+
+.editor-main .card-actions {
+  align-items: center;
+  gap: 10px;
+}
+
+.editor-main .primary-btn,
+.editor-main .ghost-btn,
+.editor-main .danger-btn {
+  min-height: 34px;
+  height: auto;
+  border-radius: 2px;
+  transition: background .15s ease, border-color .15s ease, color .15s ease;
+}
+
+.editor-main .primary-btn {
+  border: 0;
+  border-bottom: 2px solid color-mix(in srgb, var(--accent) 72%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+}
+
+.editor-main .primary-btn:hover {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.editor-main .ghost-btn {
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.editor-main .ghost-btn:hover {
+  border-bottom-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+}
+
+.editor-main .danger-btn {
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--danger, #b44) 55%, transparent);
+}
+
+.editor-create-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 4px;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.editor-create-action:hover {
+  border-bottom-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+@media (max-width: 760px) {
+  .editor-topbar :deep(.context-meta) {
+    display: none;
+  }
+
+  .editor-create-action {
+    width: 32px;
+    min-width: 32px;
+    height: 32px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .editor-create-action span {
+    display: none;
+  }
+}
+
+@media (max-width: 1080px) {
+  .editor-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .editor-layout {
+    grid-template-columns: 1fr;
+    gap: 16px;
+    padding-inline: 14px;
+  }
+
+  .editor-tabs {
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+
+  .editor-tab {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+}
+
+/* Entry workspace: keep retrieval controls on one quiet rail and reserve
+   visual weight for the entry being edited. */
+.entry-workspace-card > .card-head {
+  align-items: flex-start;
+}
+
+.entry-workspace-card > .card-head h2 {
+  padding-top: 5px;
+}
+
+.entry-workspace-card .entry-tools {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) repeat(3, minmax(112px, .8fr)) auto auto;
+  gap: 6px;
+  width: min(100%, 820px);
+}
+
+.entry-workspace-card .entry-tools .search-input,
+.entry-workspace-card .entry-tools .select-input {
+  min-width: 0;
+  width: 100%;
+  height: 32px;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 0;
+  background: transparent;
+}
+
+.entry-workspace-card .entry-tools .ghost-btn,
+.entry-workspace-card .entry-tools .primary-btn {
+  min-height: 32px;
+  height: 32px;
+  padding-inline: 9px;
+  white-space: nowrap;
+}
+
+.entry-workspace-card .entry-tools .ghost-btn.active {
+  border-bottom-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  color: var(--accent);
+}
+
+.entry-workspace-card .bulk-tools {
+  margin: 0 0 14px;
+  padding: 9px 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 56%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 56%, transparent);
+}
+
+.entry-workspace-card .bulk-tools .ghost-btn,
+.entry-workspace-card .bulk-tools .danger-btn {
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 64%, transparent);
+  border-radius: 0;
+  background: transparent;
+}
+
+.entry-workspace-card .bulk-tools .danger-btn {
+  border-bottom-color: color-mix(in srgb, var(--danger, #b44) 50%, transparent);
+}
+
+.entry-workspace-card .entry-layout {
+  grid-template-columns: minmax(230px, 280px) minmax(0, 1fr);
+  gap: 22px;
+  min-height: 500px;
+}
+
+.entry-workspace-card .entry-list {
+  max-height: calc(var(--app-viewport-height, 100vh) - 280px);
+  padding: 0 14px 0 0;
+  border: 0;
+  border-right: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+  border-radius: 0;
+  gap: 0;
+}
+
+.entry-workspace-card .entry-item {
+  position: relative;
+  gap: 8px;
+  padding: 10px 8px 10px 10px;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 54%, transparent);
+  border-radius: 0;
+  background: transparent;
+}
+
+.entry-workspace-card .entry-item::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 2px;
+  background: transparent;
+}
+
+.entry-workspace-card .entry-item:hover {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+.entry-workspace-card .entry-item.active {
+  border-color: color-mix(in srgb, var(--border) 54%, transparent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.entry-workspace-card .entry-item.active::before {
+  background: var(--accent);
+}
+
+.entry-workspace-card .entry-badges {
+  gap: 8px;
+}
+
+.entry-workspace-card .entry-type,
+.entry-workspace-card .entry-mode,
+.entry-workspace-card .entry-group {
+  padding: 0 0 0 5px;
+  border: 0;
+  border-left: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+  border-radius: 0;
+  font-size: 10px;
+}
+
+.entry-workspace-card .entry-editor {
+  min-width: 0;
+  padding: 0 0 20px 2px;
+  border: 0;
+  border-radius: 0;
+}
+
+.entry-workspace-card .entry-editor > label .text-input,
+.entry-workspace-card .entry-editor > label .select-input,
+.entry-workspace-card .entry-editor > label .text-area {
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 66%, transparent);
+  border-radius: 0;
+  background: transparent;
+}
+
+.entry-workspace-card .entry-editor > label .text-area {
+  min-height: 150px;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0 29px,
+    color-mix(in srgb, var(--accent) 8%, transparent) 29px 30px
+  );
+}
+
+.entry-workspace-card .entry-voice-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 0 4px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+}
+
+.entry-voice-editor__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.entry-voice-editor__head h3 {
+  margin: 4px 0 0;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.entry-voice-editor__count {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.entry-voice-editor__hint {
+  margin: -4px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.entry-voice-editor__sample {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.entry-voice-editor__sample textarea {
+  flex: 1;
+  min-width: 0;
+}
+
+.entry-voice-editor__sample .ghost-btn,
+.entry-voice-editor__add {
+  flex: 0 0 auto;
+}
+
+.entry-workspace-card .injection-panel {
+  padding: 14px 0 0;
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+  border-radius: 0;
+}
+
+.entry-workspace-card .injection-panel h3 {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 680;
+}
+
+.entry-workspace-card .group-chip {
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
+  border-radius: 0;
+  background: transparent;
+}
+
+.entry-workspace-card .group-chip.active {
+  border-bottom-color: var(--accent);
+  color: var(--accent);
+}
+
+.entry-workspace-card .worldbook-maintenance {
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  border: 0;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 66%, var(--border));
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+}
+
+@media (max-width: 1180px) {
+  .entry-workspace-card .entry-tools {
+    grid-template-columns: minmax(180px, 1fr) repeat(3, minmax(100px, 1fr));
+    width: 100%;
+  }
+
+  .entry-workspace-card .entry-tools .ghost-btn,
+  .entry-workspace-card .entry-tools .primary-btn {
+    grid-row: 2;
+  }
+}
+
+@media (max-width: 760px) {
+  .entry-workspace-card .entry-tools {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .entry-workspace-card .entry-tools .search-input {
+    grid-column: 1 / -1;
+  }
+
+  .entry-workspace-card .entry-tools .ghost-btn,
+  .entry-workspace-card .entry-tools .primary-btn {
+    grid-row: auto;
+  }
+
+  .entry-workspace-card .entry-layout {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .entry-workspace-card .entry-list {
+    max-height: 210px;
+    padding: 0;
+    border-right: 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+  }
+
+  .entry-workspace-card .entry-editor {
+    padding-top: 4px;
+  }
+
+  .entry-voice-editor__sample {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .entry-voice-editor__sample .ghost-btn {
+    align-self: flex-start;
+  }
+}
+</style>

@@ -1,0 +1,852 @@
+<template>
+  <div class="status-bar">
+    <div class="status-header">
+      <span class="status-icon">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
+          <path d="M7 7a2 2 0 100-4 2 2 0 000 4zM3 13c0-2 1.5-3 4-3s4 1 4 3H3z"/>
+        </svg>
+      </span>
+      <span>在场人物</span>
+    </div>
+
+    <template v-if="railMode === 'compact' || railMode === 'codex'">
+      <div class="status-rail-summary">
+        <div class="status-rail-row">
+          <span>主角</span>
+          <strong>{{ isCharacterEmpty ? '未登记角色' : playerName }}</strong>
+        </div>
+        <p
+          v-if="(isCharacterEmpty || characterTraits.length === 0) && !characterGoal"
+          class="status-rail-hint"
+        >推进冒险后，会在这里补上主角的心境、性格或目标。</p>
+        <div v-else class="status-rail-trait">
+          <span v-if="characterTraits.length > 0">性格：{{ characterTraits.slice(0, 3).join(' / ') }}</span>
+          <span v-if="characterGoal">目标：{{ characterGoal.split('\n')[0].slice(0, 22) }}</span>
+        </div>
+        <ul v-if="isDemoMode" class="demo-characters" aria-label="本场景在场人物">
+          <li v-for="char in meta.demoScene?.characters || []" :key="char.id" class="demo-character">
+            <span class="demo-character__name">{{ char.name }}</span>
+            <span class="demo-character__role">{{ char.role === 'narrator' ? '旁白' : '在场' }}</span>
+          </li>
+        </ul>
+        <div class="status-rail-actions">
+          <button
+            type="button"
+            class="status-rail-detail-btn"
+            @click="emitOpenDetail"
+          >查看详情</button>
+        </div>
+      </div>
+    </template>
+
+    <template v-else>
+    <!-- UI-E13-BIG1: demo mode — show the local demo scene's
+         characters as "可推进状态" (not as "已发生剧情"). The names
+         come from useLocalDemo via useWorkstationMeta. Hidden when
+         the user has real messages / a real session. -->
+    <ul v-if="isDemoMode" class="demo-characters" aria-label="本场景在场人物">
+      <li v-for="char in meta.demoScene?.characters || []" :key="char.id" class="demo-character">
+        <span class="demo-character__name">{{ char.name }}</span>
+        <span class="demo-character__role">{{ char.role === 'narrator' ? '旁白' : '在场' }}</span>
+      </li>
+    </ul>
+
+    <!-- UI-E18-B round 3: 时间 row removed from FULL mode.
+         时间 is now its own 4th codex section (Experience.vue codexSections),
+         so the FULL mode character detail should not re-host a 时间 row.
+         Previously the time-empty inline hint (未登记 + 点此设...) opened
+         a TimeSettings overlay (Teleport to body, z-index 1000) — when the
+         FULL mode is mounted inside the codex detail drawer (z-index 2400),
+         the overlay ended up behind the drawer backdrop and was invisible /
+         unclickable, forcing the user to close the drawer. The user should
+         access time settings via the 时间 codex section's "查看" micro-CTA,
+         which opens TimeSettings in inline mode (no Teleport, no z-index
+         collision). -->
+
+    <!-- 角色概览 - 点击打开详情 -->
+    <!-- UI-E11-C: 0-data 角色 inline hint — 当 playerName='主角' default AND 0 traits AND 0 description AND mood=50 (default),
+         显示"未登记角色"inline hint, 不再是空 stat 堆叠. -->
+    <div
+      v-if="isCharacterEmpty"
+      class="compact-profile compact-profile--empty"
+      @click="showDetail = true"
+    >
+      <div class="avatar-mini">
+        <div class="avatar-placeholder avatar-placeholder--hint">·</div>
+      </div>
+      <div class="profile-info">
+        <div class="character-name character-name--hint">未登记角色</div>
+        <div class="mood-compact">
+          <span class="mood-label mood-label--hint">设定主角</span>
+        </div>
+      </div>
+      <svg class="expand-icon" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor">
+        <path d="M2 3.5L5 6.5L8 3.5" stroke-width="1.5"/>
+      </svg>
+    </div>
+
+    <div v-else class="compact-profile" @click="showDetail = true">
+      <div class="avatar-mini">
+        <img v-if="playerAvatar" :src="playerAvatar" class="avatar" />
+        <div v-else class="avatar-placeholder">{{ playerName[0] }}</div>
+      </div>
+      <div class="profile-info">
+        <div class="character-name">{{ playerName }}</div>
+        <div class="mood-compact">
+          <div class="mood-bar">
+            <div class="mood-fill" :style="{ width: moodPercent + '%', background: moodGradient }"></div>
+          </div>
+          <span class="mood-label">{{ currentMoodLabel }}</span>
+        </div>
+      </div>
+      <svg class="expand-icon" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor">
+        <path d="M2 3.5L5 6.5L8 3.5" stroke-width="1.5"/>
+      </svg>
+    </div>
+    </template>
+
+    <!-- 时间设置弹窗 — E18-B 抽出为独立 TimeSettings.vue 组件 -->
+    <TimeSettings :open="showTimeDetail" @close="showTimeDetail = false" />
+
+    <!-- 角色详情弹窗 -->
+    <div v-if="showDetail" class="detail-overlay" @click.self="closeModal">
+      <div class="detail-modal">
+        <div class="modal-header">
+          <span>角色详情</span>
+          <button class="close-btn" @click="closeModal">×</button>
+        </div>
+
+        <div class="modal-tabs">
+          <button :class="['tab', { active: activeTab === 'info' }]" @click="activeTab = 'info'">信息</button>
+          <button :class="['tab', { active: activeTab === 'import' }]" @click="activeTab = 'import'">导入</button>
+        </div>
+
+        <div class="modal-body">
+          <div v-if="activeTab === 'info'" class="tab-content">
+            <div class="detail-section">
+              <div class="detail-avatar-wrapper">
+                <img v-if="playerAvatar" :src="playerAvatar" class="detail-avatar" />
+                <div v-else class="detail-avatar placeholder">
+                  {{ (playerName || '你')[0] }}
+                </div>
+              </div>
+              <div class="name-edit-wrapper">
+                <input
+                  v-model="editingName"
+                  type="text"
+                  class="name-input"
+                  placeholder="角色名称"
+                />
+              </div>
+            </div>
+
+            <div class="detail-section">
+              <h3>基础信息</h3>
+              <div class="info-grid">
+                <div class="info-item">
+                  <span class="info-label">性别</span>
+                  <input v-model="editingGender" type="text" class="info-input" placeholder="-" />
+                </div>
+                <div class="info-item">
+                  <span class="info-label">年龄</span>
+                  <input v-model="editingAge" type="text" class="info-input" placeholder="-" />
+                </div>
+              </div>
+            </div>
+
+            <div class="detail-section">
+              <h3>性格特征</h3>
+              <div class="traits-editor">
+                <input
+                  v-model="newTrait"
+                  type="text"
+                  class="trait-input"
+                  placeholder="添加性格标签，按回车确认"
+                  @keyup.enter="addTrait"
+                />
+                <div class="traits-list">
+                  <span v-for="(trait, index) in characterTraits" :key="trait" class="trait-tag editable">
+                    {{ trait }}
+                    <button class="trait-remove" @click="removeTrait(index)">×</button>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div class="detail-section">
+              <h3>当前心境</h3>
+              <div class="mood-selector">
+                <button
+                  v-for="m in moodOptions"
+                  :key="m.value"
+                  :class="['mood-option', { active: currentMoodValue === m.value }]"
+                  @click="setMood(m.value)"
+                >
+                  <span class="mood-dot" :style="{ background: m.color }"></span>
+                  <span class="mood-label">{{ m.label }}</span>
+                </button>
+              </div>
+              <div class="mood-slider-wrapper">
+                <span class="slider-label">情绪强度</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  v-model="moodIntensity"
+                  class="mood-slider"
+                  :style="{ '--thumb-color': moodGradient }"
+                />
+                <span class="slider-value">{{ moodIntensity }}%</span>
+              </div>
+            </div>
+
+            <div class="detail-section">
+              <h3>角色设定</h3>
+              <textarea
+                v-model="characterDescription"
+                class="description-textarea"
+                placeholder="描述角色的外貌、性格、背景故事..."
+              ></textarea>
+            </div>
+
+            <div class="detail-section">
+              <h3>当前目标</h3>
+              <textarea
+                v-model="characterGoal"
+                class="description-textarea short"
+                placeholder="角色当前的目标或追求..."
+              ></textarea>
+            </div>
+          </div>
+
+          <div v-if="activeTab === 'import'" class="tab-content">
+            <div class="import-section">
+              <p class="import-tip">从 JSON 格式的角色卡数据导入角色信息</p>
+              <textarea
+                v-model="importText"
+                class="import-textarea"
+                placeholder='{"name": "角色名", "gender": "男", "age": "25岁", "personality": ["勇敢", "善良"], "description": "角色描述...", "avatar": "头像URL"}'
+              ></textarea>
+              <div class="import-actions">
+                <button class="btn" @click="importFromJSON" :disabled="!importText.trim()">导入角色卡</button>
+              </div>
+              <div v-if="importError" class="import-error">{{ importError }}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn" @click="closeModal">取消</button>
+          <button class="btn primary" @click="saveCharacter">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { ref, computed, onMounted, watch } from 'vue'
+import { useGameStore } from '../stores/gameStore'
+import { useWorkstationMeta } from '../composables/useWorkstationMeta'
+import TimeSettings from './TimeSettings.vue'
+
+const props = defineProps({
+  railMode: {
+    type: String,
+    default: ''
+  }
+})
+
+const emit = defineEmits(['open-detail'])
+
+function emitOpenDetail() {
+  emit('open-detail', 'characters')
+}
+
+const gameStore = useGameStore()
+const meta = useWorkstationMeta()
+const isDemoMode = computed(() => meta.isDemoMode.value)
+const showDetail = ref(false)
+// showTimeDetail stays — other code paths (e.g. legacy SettingsPopup) can
+// still trigger the TimeSettings overlay modal via StatusBar.
+const showTimeDetail = ref(false)
+const activeTab = ref('info')
+const newTrait = ref('')
+const moodIntensity = ref(50)
+const characterDescription = ref('')
+const characterGoal = ref('')
+const editingName = ref('')
+const editingGender = ref('')
+const editingAge = ref('')
+const importText = ref('')
+const importError = ref('')
+
+const moodOptions = [
+  { value: 15, color: '#6b7280', label: '悲伤' },
+  { value: 30, color: '#9ca3af', label: '低落' },
+  { value: 50, color: '#60a5fa', label: '平静' },
+  { value: 70, color: '#34d399', label: '愉悦' },
+  { value: 85, color: '#fbbf24', label: '亢奋' },
+  { value: 95, color: '#f97316', label: '激动' }
+]
+
+const characterTraits = ref([])
+
+const currentMoodValue = computed(() => moodIntensity.value)
+
+const currentMood = computed(() => {
+  return moodOptions.reduce((prev, curr) => {
+    return Math.abs(curr.value - moodIntensity.value) < Math.abs(prev.value - moodIntensity.value) ? curr : prev
+  })
+})
+
+const currentMoodLabel = computed(() => currentMood.value.label)
+
+const moodGradient = computed(() => {
+  const value = moodIntensity.value
+  let prev = moodOptions[0]
+  let next = moodOptions[moodOptions.length - 1]
+
+  for (let i = 0; i < moodOptions.length - 1; i++) {
+    if (value >= moodOptions[i].value && value <= moodOptions[i + 1].value) {
+      prev = moodOptions[i]
+      next = moodOptions[i + 1]
+      break
+    }
+  }
+
+  const range = next.value - prev.value
+  const ratio = range === 0 ? 0 : (value - prev.value) / range
+  const color = interpolateColor(prev.color, next.color, ratio)
+  return color
+})
+
+function interpolateColor(color1, color2, ratio) {
+  const c1 = hexToRgb(color1)
+  const c2 = hexToRgb(color2)
+  const r = Math.round(c1.r + (c2.r - c1.r) * ratio)
+  const g = Math.round(c1.g + (c2.g - c1.g) * ratio)
+  const b = Math.round(c1.b + (c2.b - c1.b) * ratio)
+  return `rgb(${r}, ${g}, ${b})`
+}
+
+function hexToRgb(hex) {
+  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex)
+  return result ? {
+    r: parseInt(result[1], 16),
+    g: parseInt(result[2], 16),
+    b: parseInt(result[3], 16)
+  } : { r: 0, g: 0, b: 0 }
+}
+
+const moodPercent = computed(() => moodIntensity.value)
+
+const playerName = computed(() => {
+  // Pure display: if the user hasn't picked a custom name (still the
+  // "User" default from gameStore.init), surface 主角 instead so the
+  // record book doesn't read as a SaaS "User" placeholder.
+  const raw = editingName.value || gameStore.playerCharacter?.name || ''
+  if (!raw || raw === 'User') return '主角'
+  return raw
+})
+const playerAvatar = computed(() => gameStore.playerCharacter?.avatar || '')
+const playerAge = computed(() => editingAge.value || gameStore.playerCharacter?.age || '-')
+const playerGender = computed(() => editingGender.value || gameStore.playerCharacter?.gender || '-')
+
+// UI-E11-C: 0-data inline hint gates. Truthy 0 data -> show inline hint
+// instead of empty stat stacks. The time-empty gate moved out — time is
+// now its own 4th codex section (Experience.vue codexSections), so this
+// component only owns the character-empty hint.
+const isCharacterEmpty = computed(() => {
+  const hasName = !!(editingName.value || gameStore.playerCharacter?.name)
+  const hasAvatar = !!playerAvatar.value
+  const hasTraits = characterTraits.value.length > 0
+  const hasDescription = !!(editingName.value && String(gameStore.writingCharacter?.description || '').trim())
+  return !hasName && !hasAvatar && !hasTraits && !hasDescription && moodIntensity.value === 50
+})
+
+onMounted(() => {
+  syncCharacterData()
+})
+
+function loadCharacterData() {
+  if (typeof gameStore.loadWritingCharacter === 'function') {
+    gameStore.loadWritingCharacter()
+  }
+  syncCharacterData()
+}
+
+function syncCharacterData() {
+  const data = gameStore.writingCharacter || {}
+  characterTraits.value = Array.isArray(data.traits) ? data.traits : []
+  moodIntensity.value = data.mood ?? 50
+  characterDescription.value = data.description || ''
+  characterGoal.value = data.goal || ''
+  editingName.value = data.name || ''
+  editingGender.value = data.gender || ''
+  editingAge.value = data.age || ''
+}
+
+// Watch for store changes to update UI reactively
+watch(() => gameStore.writingCharacter, syncCharacterData, { deep: true })
+
+function closeModal() {
+  showDetail.value = false
+  importText.value = ''
+  importError.value = ''
+  activeTab.value = 'info'
+}
+
+function addTrait() {
+  const trait = newTrait.value.trim()
+  if (trait && !characterTraits.value.includes(trait)) {
+    characterTraits.value.push(trait)
+    newTrait.value = ''
+  }
+}
+
+function removeTrait(index) {
+  characterTraits.value.splice(index, 1)
+}
+
+function setMood(value) {
+  moodIntensity.value = value
+}
+
+function importFromJSON() {
+  importError.value = ''
+  try {
+    const data = JSON.parse(importText.value)
+    if (data.name) editingName.value = data.name
+    if (data.gender) editingGender.value = data.gender
+    if (data.age) editingAge.value = data.age
+    if (data.avatar && gameStore.playerCharacter) {
+      gameStore.playerCharacter.avatar = data.avatar
+    }
+    if (data.personality && Array.isArray(data.personality)) {
+      characterTraits.value = [...data.personality]
+    }
+    if (data.description) characterDescription.value = data.description
+    if (data.persona || data.personality_text) {
+      characterDescription.value = data.persona || data.personality_text
+    }
+    importText.value = ''
+    activeTab.value = 'info'
+  } catch (e) {
+    importError.value = 'JSON 格式错误，请检查输入'
+  }
+}
+
+function saveCharacter() {
+  const nextCharacter = {
+    name: editingName.value,
+    gender: editingGender.value,
+    age: editingAge.value,
+    traits: characterTraits.value,
+    mood: moodIntensity.value,
+    description: characterDescription.value,
+    goal: characterGoal.value
+  }
+  if (typeof gameStore.saveWritingCharacter === 'function') {
+    gameStore.saveWritingCharacter(nextCharacter)
+  } else {
+    gameStore.writingCharacter = nextCharacter
+    if (gameStore.playerCharacter) {
+      gameStore.playerCharacter.name = editingName.value
+      gameStore.playerCharacter.gender = editingGender.value
+      gameStore.playerCharacter.age = editingAge.value
+    }
+  }
+
+  showDetail.value = false
+}
+</script>
+
+<style scoped>
+.status-bar { color: var(--text-primary); }
+
+.status-header {
+  display: flex; align-items: center; gap: 0.375rem;
+  font-size: 0.75rem; font-weight: 600; color: var(--text-muted);
+  margin-bottom: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;
+}
+
+.status-icon { display: flex; align-items: center; color: var(--accent); }
+
+/* UI-E18-B round 3: 时间 row + 0-data hint CSS removed from FULL
+   mode — time is now its own 4th codex section in Experience.vue. Keep
+   .compact-profile--empty + .character-name--hint which are still wired
+   to 0-data inline hint. */
+
+/* 角色卡片 */
+.compact-profile {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px; background: var(--bg-tertiary); border-radius: 8px;
+  cursor: pointer; transition: all 0.15s;
+}
+.compact-profile:hover { background: var(--bg-hover); }
+
+/* UI-E11-C: 0-data inline hint — 当档案为空时,显示 dashed outline +
+   字符色调 hint, 而不是 SaaS stat 卡片堆叠 */
+.compact-profile--empty {
+  border: 1px dashed var(--border);
+  background: transparent;
+}
+.compact-profile--empty:hover {
+  background: var(--bg-hover);
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+}
+.character-name--hint {
+  color: var(--text-muted);
+  font-style: italic;
+}
+.avatar-placeholder--hint {
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--text-muted);
+  font-size: 18px;
+  line-height: 1;
+}
+.mood-label--hint {
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+.avatar-mini { flex-shrink: 0; }
+
+.avatar-mini .avatar,
+.avatar-mini .avatar-placeholder {
+  width: 36px; height: 36px; border-radius: 50%; object-fit: cover;
+  border: 1px solid var(--border);
+}
+
+.avatar-placeholder {
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-light); color: var(--accent);
+  font-size: 14px; font-weight: 600;
+}
+
+.profile-info { flex: 1; min-width: 0; }
+
+.character-name { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 4px; }
+
+.mood-compact { display: flex; align-items: center; gap: 8px; }
+
+.mood-bar {
+  flex: 1; height: 4px; background: var(--bg-primary); border-radius: 2px; overflow: hidden;
+}
+
+.mood-fill { height: 100%; border-radius: 2px; transition: width 0.3s ease; }
+
+.mood-label { font-size: 10px; color: var(--text-muted); white-space: nowrap; }
+
+.expand-icon { color: var(--text-muted); flex-shrink: 0; }
+
+/* 弹窗 */
+.detail-overlay {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.5); display: flex; align-items: center;
+  justify-content: center; z-index: 1000;
+}
+
+.detail-modal {
+  width: 420px; max-width: 95%; max-height: 85vh;
+  background: var(--bg-secondary); border: 1px solid var(--border);
+  border-radius: 12px; display: flex; flex-direction: column; overflow: hidden;
+}
+
+.modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px; border-bottom: 1px solid var(--border);
+  font-size: 14px; font-weight: 600;
+}
+
+.close-btn {
+  width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+  background: transparent; border: none; color: var(--text-muted); font-size: 18px;
+  cursor: pointer; border-radius: 4px;
+}
+.close-btn:hover { background: var(--bg-hover); }
+
+.modal-tabs { display: flex; border-bottom: 1px solid var(--border); }
+
+.tab {
+  flex: 1; padding: 12px; background: none; border: none;
+  color: var(--text-muted); font-size: 13px; cursor: pointer;
+  border-bottom: 2px solid transparent; transition: all 0.15s;
+}
+.tab:hover { color: var(--text-secondary); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+.modal-body { flex: 1; overflow-y: auto; }
+
+.tab-content { padding: 20px; }
+
+.detail-section { margin-bottom: 20px; }
+.detail-section:last-child { margin-bottom: 0; }
+
+.detail-section h3 {
+  font-size: 12px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;
+}
+
+.section-title {
+  font-size: 12px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;
+}
+
+/* 时间设置 */
+.time-presets { margin-bottom: 16px; }
+
+.preset-label { font-size: 11px; color: var(--text-muted); margin-bottom: 8px; }
+
+.era-presets { display: inline-flex; gap: 0; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); justify-content: center; }
+
+.era-preset-btn {
+  padding: 10px 20px; background: var(--bg-tertiary);
+  border: none; border-right: 1px solid var(--border); color: var(--text-secondary);
+  font-size: 13px; cursor: pointer; transition: all 0.15s; white-space: nowrap;
+}
+.era-preset-btn:last-child { border-right: none; }
+.era-preset-btn:hover { background: var(--bg-hover); }
+.era-preset-btn.active { background: var(--accent); color: #fff; }
+
+.era-display { margin-bottom: 12px; }
+
+.era-input {
+  width: 100%; padding: 10px 12px; background: var(--bg-primary);
+  border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text-primary); font-size: 14px;
+}
+.era-input:focus { outline: none; border-color: var(--accent); }
+
+.time-inputs { display: inline-flex; gap: 0; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); justify-content: center; }
+
+.time-input-group { display: flex; flex-direction: column; gap: 4px; border-right: 1px solid var(--border); }
+.time-input-group:last-child { border-right: none; }
+.time-input-group label { font-size: 10px; color: var(--text-muted); padding: 8px 12px 0; white-space: nowrap; }
+
+.year-input, .month-input, .day-input {
+  padding: 10px 12px; background: var(--bg-primary); border: none;
+  color: var(--text-primary); font-size: 14px; text-align: center;
+  width: 80px;
+}
+.year-input:focus, .month-input:focus, .day-input:focus { outline: none; background: var(--bg-hover); }
+
+.time-input-group:has(input:focus) { background: var(--bg-tertiary); }
+
+/* 角色详情 */
+.detail-avatar-wrapper { display: flex; justify-content: center; margin-bottom: 12px; }
+
+.detail-avatar {
+  width: 80px; height: 80px; border-radius: 50%; object-fit: cover;
+  border: 3px solid var(--accent);
+}
+.detail-avatar.placeholder {
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-light); color: var(--accent);
+  font-size: 32px; font-weight: 600;
+}
+
+.name-edit-wrapper { display: flex; justify-content: center; }
+
+.name-input {
+  text-align: center; padding: 6px 12px; background: transparent;
+  border: none; border-bottom: 1px solid var(--border);
+  color: var(--text-primary); font-size: 16px; font-weight: 600; outline: none; max-width: 200px;
+}
+.name-input:focus { border-bottom-color: var(--accent); }
+
+.info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+.info-item {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 8px 12px; background: var(--bg-tertiary); border-radius: 6px;
+}
+
+.info-label { font-size: 11px; color: var(--text-muted); }
+.info-input { background: transparent; border: none; color: var(--text-primary); font-size: 13px; padding: 0; outline: none; }
+
+.traits-editor { display: flex; flex-direction: column; gap: 8px; }
+
+.trait-input {
+  width: 100%; padding: 8px 12px; background: var(--bg-primary);
+  border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text-primary); font-size: 13px;
+}
+.trait-input:focus { outline: none; border-color: var(--accent); }
+
+.traits-list { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.trait-tag.editable {
+  display: flex; align-items: center; gap: 4px; padding: 4px 8px;
+  background: var(--accent-light); color: var(--accent); border-radius: 4px; font-size: 12px;
+}
+
+.trait-remove {
+  width: 14px; height: 14px; display: flex; align-items: center; justify-content: center;
+  background: transparent; border: none; color: var(--accent); cursor: pointer;
+  font-size: 12px; border-radius: 50%;
+}
+.trait-remove:hover { background: rgba(0,0,0,0.1); }
+
+.mood-selector { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+
+.mood-option {
+  flex: 1; min-width: 55px; display: flex; flex-direction: column; align-items: center;
+  gap: 6px; padding: 10px 4px; background: var(--bg-tertiary);
+  border: 1px solid var(--border); border-radius: 6px; cursor: pointer; transition: all 0.15s;
+}
+.mood-option:hover { border-color: var(--accent); }
+.mood-option.active { background: var(--accent-light); border-color: var(--accent); }
+
+.mood-dot { width: 12px; height: 12px; border-radius: 50%; }
+.mood-label { font-size: 10px; color: var(--text-secondary); }
+.mood-option.active .mood-label { color: var(--accent); font-weight: 500; }
+
+.mood-slider-wrapper { display: flex; align-items: center; gap: 12px; }
+.slider-label { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+
+.mood-slider {
+  flex: 1; height: 6px; -webkit-appearance: none; appearance: none;
+  background: var(--bg-tertiary); border-radius: 3px; outline: none;
+}
+.mood-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 16px; height: 16px; background: var(--thumb-color, var(--accent)); border-radius: 50%; cursor: pointer;
+}
+
+.slider-value { font-size: 12px; color: var(--text-secondary); min-width: 35px; text-align: right; }
+
+.description-textarea {
+  width: 100%; min-height: 80px; padding: 10px 12px; background: var(--bg-primary);
+  border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary);
+  font-size: 13px; line-height: 1.5; resize: vertical; font-family: inherit;
+}
+.description-textarea.short { min-height: 60px; }
+.description-textarea:focus { outline: none; border-color: var(--accent); }
+.description-textarea::placeholder { color: var(--text-muted); }
+
+/* 导入 */
+.import-section { display: flex; flex-direction: column; gap: 12px; }
+.import-tip { font-size: 13px; color: var(--text-secondary); }
+
+.import-textarea {
+  width: 100%; min-height: 200px; padding: 12px; background: var(--bg-primary);
+  border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary);
+  font-size: 12px; font-family: monospace; line-height: 1.5; resize: vertical;
+}
+.import-textarea:focus { outline: none; border-color: var(--accent); }
+.import-textarea::placeholder { color: var(--text-muted); }
+
+.import-error { padding: 8px 12px; background: rgba(239, 68, 68, 0.15); color: var(--danger); border-radius: 6px; font-size: 12px; }
+
+.modal-footer {
+  display: flex; gap: 8px; justify-content: flex-end;
+  padding: 16px 20px; border-top: 1px solid var(--border);
+}
+
+.btn {
+  padding: 8px 16px; background: var(--bg-tertiary); border: 1px solid var(--border);
+  border-radius: 6px; color: var(--text-primary); font-size: 13px; cursor: pointer; transition: all 0.15s;
+}
+.btn:hover { background: var(--bg-hover); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { background: var(--accent-hover); }
+
+.status-rail-summary {
+  display: grid;
+  gap: 6px;
+}
+
+.status-rail-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  padding: 7px 9px;
+  border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-primary) 72%, transparent);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.status-rail-row span {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.status-rail-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.status-rail-row:hover {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+}
+
+/* UI-E18: codex rail summary — 2-3 行精选摘要 (时间 / 主角 / 性格·目标)
+   + "查看详情" CTA. 卡片不可点 (无 hover pointer), 详情走 deliberate
+   "查看详情" 按钮 → emit('open-detail'). */
+.status-rail-hint {
+  margin: 0;
+  padding: 6px 9px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-style: italic;
+  line-height: 1.45;
+}
+
+.status-rail-trait {
+  display: grid;
+  gap: 3px;
+  padding: 7px 9px;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-primary) 70%, transparent);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.status-rail-trait span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-rail-actions {
+  display: flex;
+}
+
+.status-rail-detail-btn {
+  width: 100%;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-secondary) 86%, transparent);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.16s, border-color 0.16s;
+}
+
+.status-rail-detail-btn:hover {
+  border-color: color-mix(in srgb, var(--accent) 56%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-secondary));
+}
+</style>

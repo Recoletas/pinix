@@ -1,0 +1,540 @@
+import { describe, expect, it } from 'vitest'
+import { buildWorldbookContext, describeWorldbookWarning } from '../services/worldbookContextBuilder'
+import { seedWorldbookPresets } from '../services/seedWorldbookPresets'
+
+describe('worldbookContextBuilder', () => {
+  it("builds worldbook context with matched entries and budget report（合并4例）", async () => {
+{
+const result = buildWorldbookContext({
+      worldbook: {
+        name: '测试世界书',
+        worldDescription: '世界设定描述',
+        writingStyle: '克制',
+        forbidden: '禁词',
+        examples: '示例文本',
+        entries: [
+          {
+            id: 'e1',
+            name: '常驻规则',
+            type: 'rule',
+            content: '必须遵守',
+            keys: ['规则'],
+            injection: { mode: 'constant' }
+          },
+          {
+            id: 'e2',
+            name: '角色条目',
+            type: 'character',
+            content: '林舟出现',
+            keys: ['林舟'],
+            injection: { mode: 'selective', probability: 100 }
+          }
+        ]
+      },
+      chatHistory: [{ role: 'user', content: '我看见林舟站在门口' }],
+      runtimeState: {
+        writingCharacter: { name: '阿离' },
+        writingTime: { eraName: '永夜历', year: '12' },
+        worldMapState: { currentScene: '城门' },
+        activities: [{ title: '抵达城门' }],
+        goals: [{ title: '找到林舟' }],
+        encounteredCharacters: [{ name: '林舟' }],
+        keyChoices: [{ label: '先去城门问守卫' }],
+        plotJournal: [{ summary: '阿离抵达城门并开始寻找林舟。' }]
+      },
+      tokenBudget: 1200,
+      scanDepth: 2
+    })
+
+    expect(result.messages).toHaveLength(1)
+    expect(result.messages[0].content).toContain('测试世界书')
+    expect(result.messages[0].content).toContain('常驻规则')
+    expect(result.messages[0].content).toContain('角色条目')
+    expect(result.matchedEntries.map((entry) => entry.id)).toEqual(['e1', 'e2'])
+    expect(result.matchedEntries[0].matchReason).toBe('constant')
+    expect(result.matchedEntries[1].matchReason).toBe('keyword')
+    expect(result.matchedEntries[1].matchedKeysLabel).toBe('林舟')
+    expect(result.budgetReport.tokenBudget).toBe(1200)
+    expect(result.budgetReport.usedChars).toBeGreaterThan(0)
+    expect(result.warnings).toEqual([])
+}
+{
+const result = buildWorldbookContext({
+      worldbook: {
+        name: '边境世界书',
+        entries: [
+          {
+            id: 'goal-entry',
+            name: '钟楼任务',
+            type: 'quest',
+            content: '调查钟楼停摆背后的证据链。',
+            keys: ['钟楼证据']
+          },
+          {
+            id: 'character-entry',
+            name: '林舟',
+            type: 'character',
+            content: '林舟知道第一现场的异常。',
+            keys: ['林舟']
+          }
+        ]
+      },
+      chatHistory: [{ role: 'user', content: '继续。' }],
+      runtimeState: {
+        goals: [{ title: '拿到钟楼证据' }],
+        encounteredCharacters: [{ name: '林舟' }],
+        keyChoices: [{ label: '先去钟楼查痕迹' }],
+        plotJournal: [{ summary: '主角已经确认要去钟楼拿证据。' }]
+      }
+    })
+
+    expect(result.matchedEntries.map((entry) => entry.id)).toEqual(['character-entry', 'goal-entry'])
+}
+{
+const result = buildWorldbookContext({
+      worldbook: {
+        name: '灰墙世界书',
+        entries: [
+          {
+            id: 'history-location',
+            name: '灰墙',
+            type: 'location',
+            content: '灰墙旧税所仍然保存着雾历税册。',
+            keys: ['灰墙']
+          },
+          {
+            id: 'history-hook',
+            name: '税册去向',
+            type: 'quest',
+            content: '失踪税册牵连潮盐行会的旧账。',
+            keys: ['税册去向']
+          }
+        ]
+      },
+      chatHistory: [{ role: 'user', content: '继续调查。' }],
+      runtimeState: {
+        geoHistoryContext: {
+          summaries: ['林舟在灰墙留下税册线索。'],
+          participants: ['林舟'],
+          locations: ['灰墙'],
+          unresolvedHooks: ['税册去向'],
+          entryIds: []
+        }
+      }
+    })
+
+    expect(result.matchedEntries.map((entry) => entry.id)).toEqual(['history-location', 'history-hook'])
+}
+{
+const result = buildWorldbookContext({
+      worldbook: {
+        name: '雾潮暮湾世界书',
+        entries: [
+          {
+            id: 'faction-entry',
+            name: '潮盐行会',
+            type: 'organization',
+            content: '潮盐行会控制着本地夜间盐货流通。',
+            keys: ['潮盐行会']
+          },
+          {
+            id: 'location-entry',
+            name: '钟楼',
+            type: 'location',
+            content: '钟楼停摆后，城区开始按雾钟而不是日钟作息。',
+            keys: ['钟楼']
+          },
+          {
+            id: 'hook-entry',
+            name: '雾税账册',
+            type: 'quest',
+            content: '账册可能证明有人改写了雾税流向。',
+            keys: ['雾税账册']
+          }
+        ]
+      },
+      chatHistory: [{ role: 'user', content: '继续。' }],
+      runtimeState: {
+        factionRelations: {
+          潮盐行会: -18
+        },
+        plotJournal: [{
+          summary: '主角刚离开城门。',
+          participants: ['林舟'],
+          locations: ['钟楼'],
+          keyChoices: ['先去钟楼查痕迹'],
+          unresolvedHooks: ['雾税账册']
+        }]
+      }
+    })
+
+    expect(result.matchedEntries.map((entry) => entry.id)).toEqual([
+      'location-entry',
+      'faction-entry',
+      'hook-entry'
+    ])
+}
+})
+
+  it("orders constant entries before typed keyword matches（合并4例）", async () => {
+{
+const result = buildWorldbookContext({
+      worldbook: {
+        name: '排序世界书',
+        entries: [
+          { id: 'general', name: '普通', type: 'general', content: '普通内容', keys: ['目标'] },
+          { id: 'style', name: '风格', type: 'style', content: '风格内容', keys: ['目标'] },
+          { id: 'forbidden', name: '禁忌', type: 'forbidden', content: '禁忌内容', keys: ['目标'] },
+          { id: 'constant', name: '常驻', type: 'general', content: '常驻内容', keys: [], injection: { mode: 'constant' } },
+          { id: 'rule', name: '规则', type: 'rule', content: '规则内容', keys: ['目标'] }
+        ]
+      },
+      chatHistory: [{ role: 'user', content: '目标出现了' }]
+    })
+
+    expect(result.matchedEntries.map((entry) => entry.id)).toEqual([
+      'constant',
+      'rule',
+      'forbidden',
+      'style',
+      'general'
+    ])
+}
+{
+const result = buildWorldbookContext({
+      worldbook: {
+        name: '空世界书',
+        entries: [{
+          id: 'e1',
+          name: '普通条目',
+          type: 'general',
+          content: '无关内容',
+          keys: ['无关']
+        }]
+      },
+      chatHistory: [{ role: 'user', content: '完全不相关' }],
+      tokenBudget: 500
+    })
+
+    expect(result.messages).toHaveLength(0)
+    expect(result.matchedEntries).toHaveLength(0)
+    expect(result.warnings).toContain('no-matched-entries')
+    expect(result.contextLedger.parts[0]).toMatchObject({
+      source: 'worldbook',
+      purpose: 'worldbook-empty',
+      included: false,
+      warning: 'no-matched-entries'
+    })
+}
+{
+expect(describeWorldbookWarning('no-worldbook')).toContain('世界书')
+    expect(describeWorldbookWarning('no-matched-entries')).toContain('命中')
+}
+{
+const result = buildWorldbookContext({ worldbook: null })
+
+    expect(result.messages).toEqual([])
+    expect(result.contextLedger.parts[0]).toMatchObject({
+      source: 'worldbook',
+      purpose: 'worldbook-empty',
+      included: false,
+      warning: 'no-worldbook'
+    })
+}
+})
+
+  it("records included and truncated worldbook entries in the context ledger without raw content fields（合并4例）", async () => {
+{
+const longContent = '林舟知道钟楼密室的细节。'.repeat(80)
+    const result = buildWorldbookContext({
+      worldbook: {
+        id: 'wb-ledger',
+        name: '账本世界书',
+        entries: [
+          {
+            id: 'constant-rule',
+            name: '常驻短规则',
+            type: 'rule',
+            content: '守规则。',
+            keys: [],
+            injection: { mode: 'constant' }
+          },
+          {
+            id: 'long-character',
+            name: '林舟长条目',
+            type: 'character',
+            content: longContent,
+            keys: ['林舟']
+          }
+        ]
+      },
+      chatHistory: [{ role: 'user', content: '我看见林舟。' }],
+      tokenBudget: 80
+    })
+
+    const included = result.contextLedger.parts.find((part) => part.entryId === 'constant-rule')
+    const truncated = result.contextLedger.parts.find((part) => part.entryId === 'long-character')
+
+    expect(included).toMatchObject({
+      purpose: 'worldbook-entry',
+      included: true,
+      truncated: false
+    })
+    expect(truncated).toMatchObject({
+      purpose: 'worldbook-entry-truncated',
+      included: false,
+      truncated: true,
+      warning: 'truncated:林舟长条目'
+    })
+    expect(truncated.preview.length).toBeLessThanOrEqual(120)
+    expect(truncated).not.toHaveProperty('content')
+    expect(result.messages[0].content).toContain('常驻短规则')
+    expect(result.messages[0].content).not.toContain(longContent)
+}
+{
+const result = buildWorldbookContext({
+      worldbook: {
+        name: '雾港',
+        worldDescription: '雾港每夜失去一段记忆。',
+        structuredSettings: {
+          story: { logline: '书记官追查吞噬姓名的雾。' },
+          creativeRules: { consistency: '所有魔法都必须付出记忆代价。' }
+        },
+        entries: [
+          {
+            id: 'e1',
+            name: '常驻规则',
+            type: 'rule',
+            content: '必须遵守',
+            keys: [],
+            injection: { mode: 'constant' }
+          }
+        ]
+      },
+      chatHistory: [{ role: 'user', content: '书记官走进雾港。' }],
+      runtimeState: {},
+      tokenBudget: 2000
+    })
+
+    expect(result.messages[0].content).not.toContain('【结构化设定】')
+    expect(result.messages[0].content).not.toContain('一句话故事：书记官追查吞噬姓名的雾。')
+    expect(result.messages[0].content).not.toContain('一致性规则：所有魔法都必须付出记忆代价。')
+    expect(result.messages[0].content).toContain('◆ 【常驻规则】')
+}
+{
+for (const preset of seedWorldbookPresets) {
+      const result = buildWorldbookContext({
+        worldbook: {
+          ...preset,
+          worldDescription: `${preset.worldDescription}\n\n开场困境：${preset.openingHook}`,
+          entries: preset.entries.map((entry, index) => ({
+            id: `${preset.id}-${index}`,
+            ...entry
+          }))
+        },
+        chatHistory: [{ role: 'user', content: '开始故事' }],
+        includeStarterEntries: true,
+        tokenBudget: 3000
+      })
+
+      const starterEntries = result.matchedEntries.filter(entry => entry.matchReason === 'starter')
+      const starterTypes = new Set(starterEntries.map(entry => entry.type))
+
+      expect(result.messages).toHaveLength(1)
+      expect(result.messages[0].content).toContain(preset.name)
+      expect(result.messages[0].content).toContain(preset.openingHook.slice(0, 12))
+      expect(starterTypes.has('location')).toBe(true)
+      expect(starterTypes.has('organization')).toBe(true)
+      expect(starterTypes.has('event')).toBe(true)
+      expect(starterTypes.has('quest')).toBe(true)
+      expect(starterEntries.length).toBeGreaterThanOrEqual(8)
+    }
+}
+{
+const result = buildWorldbookContext({
+      worldbook: {
+        name: '归档世界书',
+        entries: [
+          {
+            id: 'tower-entry',
+            name: '钟楼档案',
+            type: 'location',
+            content: '钟楼停摆后，城区按雾钟作息。',
+            keys: ['钟楼']
+          },
+          {
+            id: 'witness-entry',
+            name: '苔娜难民领队',
+            type: 'character',
+            content: '苔娜掌握灰墙真相分岔的第一手证词。',
+            keys: ['苔娜']
+          },
+          {
+            id: 'hook-entry',
+            name: '雾税账册',
+            type: 'quest',
+            content: '账册可能证明有人改写了雾税流向。',
+            keys: ['雾税账册']
+          },
+          {
+            id: 'noise-entry',
+            name: '无关条目',
+            type: 'general',
+            content: '跟历史节点无关的条目。',
+            keys: ['完全不相关']
+          }
+        ]
+      },
+      chatHistory: [{ role: 'user', content: '继续。' }],
+      runtimeState: {
+        historyNode: {
+          id: 'hn_archive_1',
+          title: '雾税账册追溯',
+          participants: ['苔娜'],
+          unresolvedHooks: ['雾税账册去向'],
+          priorFacts: ['钟楼停摆']
+        }
+      }
+    })
+
+    // sort: character (priority 4) < location (5) < quest (10) per ENTRY_TYPE_PRIORITY
+    expect(result.matchedEntries.map((entry) => entry.id)).toEqual([
+      'witness-entry',
+      'tower-entry',
+      'hook-entry'
+    ])
+}
+})
+
+  it("boosts historyEntryIds into the matched set with history matchReason（合并4例）", async () => {
+{
+const result = buildWorldbookContext({
+      worldbook: {
+        name: '归档世界书',
+        entries: [
+          {
+            id: 'bound-entry',
+            name: '灰墙真相分岔档案',
+            type: 'quest',
+            content: '灰墙真相分岔档案描述。',
+            keys: ['灰墙档案']
+          },
+          {
+            id: 'noise-entry',
+            name: '无关条目',
+            type: 'general',
+            content: '无关内容。',
+            keys: ['无关']
+          }
+        ]
+      },
+      chatHistory: [{ role: 'user', content: '继续。' }],
+      runtimeState: {
+        // Empty chat history means no keyword matches; only the bound id should win.
+      },
+      historyEntryIds: ['bound-entry']
+    })
+
+    expect(result.matchedEntries).toHaveLength(1)
+    expect(result.matchedEntries[0]).toMatchObject({
+      id: 'bound-entry',
+      matchReason: 'history',
+      matchedKeysLabel: '历史节点绑定'
+    })
+}
+{
+const result = buildWorldbookContext({
+      worldbook: {
+        name: '归档世界书',
+        entries: [
+          {
+            id: 'fallback-entry',
+            name: '钟楼证据档案',
+            type: 'quest',
+            content: '证据档案内容。',
+            keys: ['钟楼证据']
+          }
+        ]
+      },
+      chatHistory: [],
+      runtimeState: {
+        historyNode: {
+          id: 'hn_archive_2',
+          entryIds: ['fallback-entry']
+        }
+      }
+    })
+
+    expect(result.matchedEntries).toHaveLength(1)
+    expect(result.matchedEntries[0]).toMatchObject({
+      id: 'fallback-entry',
+      matchReason: 'history'
+    })
+}
+{
+const result = buildWorldbookContext({
+      worldbook: {
+        name: '排序世界书',
+        entries: [
+          {
+            id: 'keyword-entry',
+            name: '关键字条目',
+            type: 'general',
+            content: '普通条目',
+            keys: ['目标']
+          },
+          {
+            id: 'constant-entry',
+            name: '常驻条目',
+            type: 'general',
+            content: '常驻内容',
+            injection: { mode: 'constant' }
+          },
+          {
+            id: 'history-entry',
+            name: '历史绑定条目',
+            type: 'quest',
+            content: '历史绑定',
+            keys: ['目标']
+          }
+        ]
+      },
+      chatHistory: [{ role: 'user', content: '目标出现了' }],
+      historyEntryIds: ['history-entry']
+    })
+
+    expect(result.matchedEntries.map((entry) => entry.id)).toEqual([
+      'history-entry',
+      'constant-entry',
+      'keyword-entry'
+    ])
+}
+{
+const result = buildWorldbookContext({
+      worldbook: {
+        name: '归档世界书',
+        entries: [
+          {
+            id: 'overlap-entry',
+            name: '钟楼证据档案',
+            type: 'quest',
+            content: '档案内容',
+            keys: ['钟楼证据']
+          }
+        ]
+      },
+      chatHistory: [{ role: 'user', content: '我去查钟楼证据。' }],
+      runtimeState: {
+        historyNode: {
+          id: 'hn_overlap',
+          entryIds: ['overlap-entry']
+        }
+      }
+    })
+
+    expect(result.matchedEntries).toHaveLength(1)
+    expect(result.matchedEntries[0].id).toBe('overlap-entry')
+    expect(result.matchedEntries[0].matchReason).toBe('history')
+}
+})
+})

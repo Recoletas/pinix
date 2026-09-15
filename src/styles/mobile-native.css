@@ -1,0 +1,21 @@
+.pinax-native {
+  --pinax-safe-top: env(safe-area-inset-top, 0px);
+  --pinax-safe-right: env(safe-area-inset-right, 0px);
+  --pinax-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --pinax-safe-left: env(safe-area-inset-left, 0px);
+  overscroll-behavior: none;
+}
+
+.pinax-native body {
+  min-height: 100dvh;
+  padding-right: var(--pinax-safe-right);
+  padding-left: var(--pinax-safe-left);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.pinax-native button,
+.pinax-native input,
+.pinax-native textarea,
+.pinax-native [contenteditable='true'] {
+  touch-action: manipulation;
+}

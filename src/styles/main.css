@@ -1,0 +1,847 @@
+:root {
+  --app-viewport-height: 100vh;
+  --app-viewport-half-height: 50vh;
+  --z-floating-rail: 220;
+  --z-floating-dock: 240;
+  --z-floating-action: 260;
+  --z-popover: 400;
+  --z-sheet: 600;
+  --z-modal-backdrop: 800;
+  --z-modal: 810;
+  --z-toast: 900;
+  --z-docs: 850;
+  --z-stage-decor: 2;
+  --z-stage-hero: 5;
+  --z-stage-cta: 6;
+  --z-workbench-chrome: 90;
+  --z-workbench-overlay: 180;
+  --z-workbench-sheet: 200;
+  --control-height-sm: 28px;
+  --control-height-md: 34px;
+  --control-height-lg: 40px;
+  --control-radius: 3px;
+  --motion-fast: 140ms;
+  --motion-page: 220ms;
+  --motion-layer: 180ms;
+  --motion-contour: 12s;
+  --motion-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --hero-placeholder-gradient: linear-gradient(180deg, #2a0d12 0%, #1a0809 100%);
+  --z-mechanism-notice: 248;
+}
+
+@supports (height: 100dvh) {
+  :root {
+    --app-viewport-height: 100dvh;
+    --app-viewport-half-height: 50dvh;
+  }
+}
+
+/* Canvas overlay colors (always dark, theme-independent) */
+:root {
+  --canvas-bg: #1a1f2e;
+  --canvas-overlay: rgba(30, 34, 48, 0.9);
+  --canvas-overlay-strong: rgba(30, 34, 48, 0.95);
+  --canvas-surface: rgba(37, 42, 58, 0.8);
+  --canvas-border: rgba(255, 255, 255, 0.1);
+  --canvas-border-hover: rgba(255, 255, 255, 0.2);
+  --canvas-text: rgba(255, 255, 255, 0.7);
+  --canvas-text-secondary: rgba(255, 255, 255, 0.4);
+  --canvas-text-muted: rgba(255, 255, 255, 0.3);
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.spin { animation: spin 1s linear infinite; }
+
+/* Self-hosted display font (LXGW WenKai v1.522, OFL 1.1)
+   Used for hero titles on the Welcome / Opening surfaces.
+   Subset to ~2700 common chars + ASCII + CJK punctuation (593 KB WOFF2). */
+@font-face {
+  font-family: "LXGW WenKai";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../assets/fonts/LXGWWenKai-Regular.woff2") format("woff2");
+}
+
+:root {
+  /* 展示/标题字体：霞鹜文楷（自打包子集）打头，CJK 兜底全为合格黑体。
+     旧栈 "ZCOOL XiaoWei"/"Iowan Old Style"/"Songti SC" 在 Windows 全部缺失，
+     会一路落到系统默认宋体（可用性调研确认的"丑字体"根因），已删除。 */
+  --font-display: "LXGW WenKai", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-serif: var(--font-display);
+  --font-sans: "Segoe UI Variable", "Inter", "Segoe UI", -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif;
+  /* 正文阅读唯一权威定义：中文黑体系，消除此前三处回退漂移。 */
+  --font-body: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif;
+  /* 写作面正文：Cmd 配方 —— 西文等宽给码字节奏，中文苹方/雅黑保证观感。 */
+  --font-writing: Menlo, Consolas, Monaco, "Courier New", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", monospace;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+/* Global SVG <defs> for archive-folio filters. Any element with
+   `filter: url(#pinax-paper-tear)` will get the torn-edge displacement. */
+.pinax-svg-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/* Light Theme (default) */
+:root {
+  --bg-primary: #f3eee6;
+  --bg-secondary: #fbf8f2;
+  --bg-tertiary: #e5ddd0;
+  --bg-hover: #ddd4c7;
+  --text-primary: #211a15;
+  --text-secondary: #5d5247;
+  --text-muted: #8d7f70;
+
+  --accent: #b84b35;
+  --accent-hover: #a2402d;
+  --accent-light: rgba(184, 75, 53, 0.1);
+  --accent-text: #ffffff;
+
+  --accent-purple: #6f61cb;
+  --accent-purple-light: rgba(111, 97, 203, 0.12);
+  --accent-teal: #0d8b7b;
+  --accent-teal-light: rgba(13, 139, 123, 0.12);
+  --accent-amber: #c7891f;
+  --accent-amber-light: rgba(199, 137, 31, 0.12);
+  --accent-rose: #b95567;
+  --accent-rose-light: rgba(185, 85, 103, 0.12);
+  --accent-emerald: #2d9978;
+  --accent-emerald-light: rgba(45, 153, 120, 0.12);
+  --archive-paper: #f3f6fb;
+  --archive-paper-strong: #e1e9f4;
+  --archive-paper-soft: #fbfdfe;
+  --archive-ink: #0f2236;
+  --archive-ink-soft: #4a637d;
+  --archive-olive: #1f4d7a;
+  --archive-olive-strong: #0d2c4d;
+  --archive-gold: #7d97b0;
+  --archive-gold-soft: #c1d2e4;
+  --archive-rose: #a23a4a;
+  --archive-photo: #1a3a5e;
+  --hairline-soft: rgba(74, 99, 125, 0.18);
+  --hairline-accent: rgba(125, 151, 176, 0.40);
+  --hairline-rose: rgba(162, 58, 74, 0.40);
+  --fs-display: clamp(120px, 18vw, 220px);
+  --fs-mono: 10px;
+  --fs-sm: 12px;
+  --fs-base: 14px;
+  --spacing-rhythm: 8px;
+
+  /* Semantic colors */
+  --success: #277f63;
+  --warning: #b37213;
+  --danger: #c3484d;
+  --info: #0b88a2;
+
+  /* Borders & Shadows */
+  --border: #d6cdc0;
+  --border-strong: #c4b7a5;
+  --shadow: rgba(21, 16, 10, 0.08);
+  --shadow-md: rgba(21, 16, 10, 0.14);
+  --surface-raised: color-mix(in srgb, var(--bg-secondary) 88%, #ffffff 12%);
+  --surface-soft: color-mix(in srgb, var(--bg-secondary) 92%, var(--bg-primary));
+  --surface-panel: color-mix(in srgb, var(--bg-primary) 90%, var(--bg-secondary));
+  --surface-overlay: color-mix(in srgb, #000 22%, transparent);
+  --shadow-floating: 0 14px 30px color-mix(in srgb, #000 12%, transparent);
+  --shadow-elevated: 0 26px 58px color-mix(in srgb, #000 20%, transparent);
+
+  /* Gradient accents */
+  --gradient-primary: linear-gradient(135deg, #b84b35 0%, #6f61cb 100%);
+  --gradient-warm: linear-gradient(135deg, #c7891f 0%, #b95567 100%);
+  --gradient-cool: linear-gradient(135deg, #0d8b7b 0%, #0b88a2 100%);
+}
+
+/* Dark Theme */
+.theme-dark {
+  --bg-primary: #151210;
+  --bg-secondary: #1d1916;
+  --bg-tertiary: #29231f;
+  --bg-hover: #332b26;
+  --text-primary: #f5eee4;
+  --text-secondary: #b8ab9b;
+  --text-muted: #7d7165;
+
+  --accent: #ff855f;
+  --accent-hover: #ff9574;
+  --accent-light: rgba(255, 133, 95, 0.15);
+  --accent-text: #120f0c;
+
+  --accent-purple: #9b8af2;
+  --accent-purple-light: rgba(155, 138, 242, 0.15);
+  --accent-teal: #4ad4c0;
+  --accent-teal-light: rgba(74, 212, 192, 0.15);
+  --accent-amber: #f0ba54;
+  --accent-amber-light: rgba(240, 186, 84, 0.15);
+  --accent-rose: #e48193;
+  --accent-rose-light: rgba(228, 129, 147, 0.15);
+  --accent-emerald: #5bc9a3;
+  --accent-emerald-light: rgba(91, 201, 163, 0.15);
+  --archive-paper: #11202e;
+  --archive-paper-strong: #1a2c3d;
+  --archive-paper-soft: #162636;
+  --archive-ink: #d8e3f0;
+  --archive-ink-soft: #8aa3bd;
+  --archive-olive: #4f8bc4;
+  --archive-olive-strong: #2b5d8f;
+  --archive-gold: #6c8caf;
+  --archive-gold-soft: #3d5a7a;
+  --archive-rose: #b04a5c;
+  --archive-photo: #0d1c2a;
+  --hairline-soft: rgba(138, 163, 189, 0.18);
+  --hairline-accent: rgba(108, 140, 175, 0.42);
+  --hairline-rose: rgba(176, 74, 92, 0.40);
+  --fs-display: clamp(120px, 18vw, 220px);
+  --fs-mono: 10px;
+  --fs-sm: 12px;
+  --fs-base: 14px;
+  --spacing-rhythm: 8px;
+
+  /* Semantic colors */
+  --success: #73c9a9;
+  --warning: #f0ba54;
+  --danger: #f0878b;
+  --info: #5dc7de;
+
+  --border: #3a312b;
+  --border-strong: #4a3e37;
+  --shadow: rgba(0, 0, 0, 0.34);
+  --shadow-md: rgba(0, 0, 0, 0.46);
+  --surface-raised: color-mix(in srgb, var(--bg-secondary) 84%, #101010 16%);
+  --surface-soft: color-mix(in srgb, var(--bg-secondary) 88%, var(--bg-primary));
+  --surface-panel: color-mix(in srgb, var(--bg-primary) 86%, var(--bg-secondary));
+  --surface-overlay: color-mix(in srgb, #000 46%, transparent);
+  --shadow-floating: 0 12px 30px color-mix(in srgb, #000 42%, transparent);
+  --shadow-elevated: 0 24px 56px color-mix(in srgb, #000 56%, transparent);
+
+  /* Gradient accents */
+  --gradient-primary: linear-gradient(135deg, #ff855f 0%, #9b8af2 100%);
+  --gradient-warm: linear-gradient(135deg, #f0ba54 0%, #e48193 100%);
+  --gradient-cool: linear-gradient(135deg, #4ad4c0 0%, #5dc7de 100%);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Segoe UI Variable', 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Microsoft YaHei', sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.6;
+  min-height: var(--app-viewport-height, 100vh);
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  min-height: var(--app-viewport-height, 100vh);
+  display: flex;
+  flex-direction: column;
+}
+
+/* Layout */
+.container {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 1rem;
+  width: 100%;
+}
+
+.flex { display: flex; }
+.flex-col { flex-direction: column; }
+.flex-1 { flex: 1; }
+.flex-wrap { flex-wrap: wrap; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.justify-center { justify-content: center; }
+.gap-1 { gap: 0.5rem; }
+.gap-2 { gap: 1rem; }
+.gap-3 { gap: 1.5rem; }
+.gap-4 { gap: 2rem; }
+
+/* Panel */
+.panel {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.panel-header {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Buttons */
+.btn {
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: all 0.15s ease;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.btn-primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: var(--accent-text);
+}
+
+.btn-primary,
+.btn.primary,
+.action-btn.primary,
+.action-btn.active,
+.add-btn.prominent,
+.add-btn.btn-new,
+.asset-canvas-primary,
+.mode-label.active,
+.tool-btn.active,
+.fp-btn.active,
+.ng-btn.active,
+.ai-action-btn,
+.ai-result-btn,
+.era-preset-btn.active,
+.section-btn.active,
+.send-btn,
+.current-tag,
+.new-btn,
+.preset-btn.active,
+.tavern-btn.primary,
+.quick-btn.dialogue-btn.active,
+.quick-note-panel-btn.primary,
+.quick-note-mini-btn.primary,
+.image-gen-size-btn.active,
+.image-gen-count-btn.active,
+.image-gen-generate-btn,
+.advisor-fab,
+.char-item.active .char-avatar.small {
+  color: var(--accent-text) !important;
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Input */
+.input {
+  width: 100%;
+  padding: 0.625rem 0.875rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  transition: border-color 0.15s ease;
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.input::placeholder {
+  color: var(--text-muted);
+}
+
+/* Status badges */
+.badge {
+  display: inline-flex;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.badge-success { background: rgba(34, 197, 94, 0.15); color: var(--success); }
+.badge-warning { background: rgba(234, 179, 8, 0.15); color: var(--warning); }
+.badge-accent { background: rgba(59, 130, 246, 0.15); color: var(--accent); }
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg-tertiary);
+  border-radius: 3px;
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.fade-in {
+  animation: fadeIn 0.2s ease forwards;
+}
+
+/* 5C v3.10: 上半屏动态 — drifting dust motes.
+   Lives in the upper half of the viewport only (inset: 0 0 50% 0).
+   8 CSS-only particles via box-shadow on two pseudo-elements.
+   No JS, no images, no canvas. Gated by prefers-reduced-motion. */
+.dust-motes {
+  position: fixed;
+  inset: 0 0 50% 0;
+  pointer-events: none;
+  z-index: 2;
+  overflow: hidden;
+}
+.dust-motes::before,
+.dust-motes::after {
+  content: '';
+  position: absolute;
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: var(--archive-paper);
+  opacity: 0.4;
+  box-shadow:
+    100px 50px 1px 0.5px var(--archive-paper),
+    300px 120px 1.5px 0.5px var(--archive-paper),
+    500px 80px 1px 0.5px var(--archive-paper),
+    700px 200px 1.2px 0.5px var(--archive-paper);
+  animation: dustFloat 12s linear infinite;
+}
+.dust-motes::after {
+  left: 200px;
+  top: 30px;
+  animation-delay: -6s;
+  box-shadow:
+    400px 180px 1px 0.5px var(--archive-paper),
+    600px 50px 1.5px 0.5px var(--archive-paper),
+    800px 130px 1px 0.5px var(--archive-paper),
+    1000px 220px 1.2px 0.5px var(--archive-paper);
+}
+@keyframes dustFloat {
+  from { transform: translate(0, 0); opacity: 0; }
+  10%  { opacity: 0.4; }
+  90%  { opacity: 0.4; }
+  to   { transform: translate(40px, 100vh); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dust-motes { display: none; }
+}
+
+/* 5C v3.10: 上半屏动态 — title breathing. Subtle scale on the
+   .opening-title-block strong element. Anchored on the left so it
+   "swells" rightward, not center-out (which would feel like a pulse
+   of the whole block). */
+@media (prefers-reduced-motion: no-preference) {
+  .opening-title-block strong {
+    animation: titleBreathe 6s cubic-bezier(0.22, 1, 0.36, 1) infinite alternate;
+    transform-origin: 0 50%;
+  }
+}
+@keyframes titleBreathe {
+  from { transform: scale(1.0); }
+  to   { transform: scale(1.02); }
+}
+
+/* Page route transitions — direction-aware slide-in (V4 2026-06-26).
+   Enter slides 16px horizontally in the direction of motion plus a 4px
+   vertical settle, leave mirrors the same vector in 10px (the reverse
+   direction, so enter and leave read as a continuous page-swap instead
+   of two parallel motions). The horizontal sign comes from
+   --page-direction which AppShell.vue's @before-enter / @before-leave
+   hooks write onto the element just before each phase begins (+1 for
+   rightward enter, -1 for leftward enter; leave uses the negated
+   value so old page exits opposite of new page's entrance). 0.32s
+   enter + 0.18s leave keeps total motion under 0.5s in out-in mode,
+   matching the opening-titleBreathe curve so mast and page share a
+   single motion vocabulary. */
+.page-route-enter-active {
+  transition: opacity var(--motion-page) var(--motion-ease-out),
+              transform var(--motion-page) var(--motion-ease-out);
+  will-change: opacity, transform;
+}
+
+.page-route-leave-active {
+  transition: opacity var(--motion-layer) var(--motion-ease-out),
+              transform var(--motion-layer) var(--motion-ease-out);
+  will-change: opacity, transform;
+}
+
+.page-layer-enter-active,
+.page-layer-leave-active {
+  transition: opacity var(--motion-layer) var(--motion-ease-out),
+              transform var(--motion-layer) var(--motion-ease-out);
+}
+
+.page-layer-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.page-layer-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+.page-route-enter-from {
+  opacity: 0;
+  transform: translateX(calc(var(--page-direction, 1) * 16px)) translateY(4px);
+}
+
+.page-route-leave-to {
+  opacity: 0;
+  transform: translateX(calc(var(--page-direction, 1) * 10px));
+}
+
+.modal-fade-enter-active,
+.modal-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.modal-fade-enter-from,
+.modal-fade-leave-to {
+  opacity: 0;
+}
+
+/* Caption micro fade — used by shell-brand-route <strong> when route
+   caption changes (e.g. 体验 → 写作). 0.18s enter only; on leave the
+   previous word disappears instantly so the new one can fade in without
+   stacking two fade layers. */
+.caption-fade-enter-active {
+  transition: opacity 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.caption-fade-leave-active {
+  transition: opacity 0.01s ease;
+}
+.caption-fade-enter-from,
+.caption-fade-leave-to {
+  opacity: 0;
+}
+
+.modal-scale-enter-active,
+.modal-scale-leave-active {
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.modal-scale-enter-from,
+.modal-scale-leave-to {
+  opacity: 0;
+  transform: scale(0.96);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-route-enter-active,
+  .page-route-leave-active,
+  .page-layer-enter-active,
+  .page-layer-leave-active {
+    transition: opacity 0.01s ease;
+    will-change: auto;
+  }
+
+  .page-route-enter-from {
+    opacity: 0;
+    transform: none;
+  }
+
+  .page-route-leave-to {
+    opacity: 0;
+  }
+
+  .modal-fade-enter-active,
+  .modal-fade-leave-active,
+  .modal-scale-enter-active,
+  .modal-scale-leave-active {
+    transition: opacity 0.01s ease;
+  }
+
+  .modal-scale-enter-from,
+  .modal-scale-leave-to {
+    opacity: 0;
+    transform: none;
+  }
+}
+
+/* Choice buttons */
+.choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.choice-btn {
+  padding: 0.4rem 0.875rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.15s ease;
+}
+
+.choice-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Grid layouts */
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1rem;
+}
+
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+}
+
+/* Utilities */
+
+.text-center { text-align: center; }
+.text-muted { color: var(--text-muted); }
+.text-accent { color: var(--accent); }
+.text-success { color: var(--success); }
+.text-warning { color: var(--warning); }
+.text-purple { color: var(--accent-purple); }
+.text-teal { color: var(--accent-teal); }
+.text-amber { color: var(--accent-amber); }
+.text-rose { color: var(--accent-rose); }
+.text-emerald { color: var(--accent-emerald); }
+
+/* Color backgrounds */
+.bg-purple { background: var(--accent-purple-light); }
+.bg-teal { background: var(--accent-teal-light); }
+.bg-amber { background: var(--accent-amber-light); }
+.bg-rose { background: var(--accent-rose-light); }
+.bg-emerald { background: var(--accent-emerald-light); }
+
+/* Accent borders */
+.border-purple { border-color: var(--accent-purple); }
+.border-teal { border-color: var(--accent-teal); }
+.border-amber { border-color: var(--accent-amber); }
+.border-rose { border-color: var(--accent-rose); }
+.border-emerald { border-color: var(--accent-emerald); }
+
+/* Gradient text */
+.text-gradient {
+  background: var(--gradient-primary);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Color tags */
+.color-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.color-tag-purple { background: var(--accent-purple-light); color: var(--accent-purple); }
+.color-tag-teal { background: var(--accent-teal-light); color: var(--accent-teal); }
+.color-tag-amber { background: var(--accent-amber-light); color: var(--accent-amber); }
+.color-tag-rose { background: var(--accent-rose-light); color: var(--accent-rose); }
+.color-tag-emerald { background: var(--accent-emerald-light); color: var(--accent-emerald); }
+
+/* Card variants */
+.card-accent-purple { border-left: 3px solid var(--accent-purple); }
+.card-accent-teal { border-left: 3px solid var(--accent-teal); }
+.card-accent-amber { border-left: 3px solid var(--accent-amber); }
+.card-accent-rose { border-left: 3px solid var(--accent-rose); }
+.card-accent-emerald { border-left: 3px solid var(--accent-emerald); }
+
+/* Section indicators */
+.section-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.section-dot-purple { background: var(--accent-purple); }
+.section-dot-teal { background: var(--accent-teal); }
+.section-dot-amber { background: var(--accent-amber); }
+.section-dot-rose { background: var(--accent-rose); }
+.section-dot-emerald { background: var(--accent-emerald); }
+
+/* Hover effects with colors */
+.hover-purple:hover { border-color: var(--accent-purple); color: var(--accent-purple); }
+.hover-teal:hover { border-color: var(--accent-teal); color: var(--accent-teal); }
+.hover-amber:hover { border-color: var(--accent-amber); color: var(--accent-amber); }
+.hover-rose:hover { border-color: var(--accent-rose); color: var(--accent-rose); }
+.hover-emerald:hover { border-color: var(--accent-emerald); color: var(--accent-emerald); }
+
+.mt-1 { margin-top: 0.5rem; }
+.mt-2 { margin-top: 1rem; }
+.mt-3 { margin-top: 1.5rem; }
+.mb-1 { margin-bottom: 0.5rem; }
+.mb-2 { margin-bottom: 1rem; }
+.mb-3 { margin-bottom: 1.5rem; }
+
+.overflow-hidden { overflow: hidden; }
+.overflow-auto { overflow: auto; }
+.rp-dialogue {
+  font-style: italic;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--archive-ink) 92%, var(--archive-olive-strong));
+}
+
+.rp-dialogue-quote {
+  font-style: inherit;
+  font-weight: 600;
+  color: inherit;
+}
+
+.rp-dialogue-quote-soft,
+.rp-dialogue-quote-warm,
+.rp-dialogue-quote-neutral {
+  font-style: italic;
+  color: color-mix(in srgb, var(--archive-ink-soft) 88%, transparent);
+}
+
+.theme-dark .rp-dialogue-quote-soft,
+.theme-dark .rp-dialogue-quote-warm,
+.theme-dark .rp-dialogue-quote-neutral {
+  color: color-mix(in srgb, var(--archive-ink-soft) 92%, transparent);
+}
+
+.rp-action {
+  font-style: italic;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--archive-ink) 86%, var(--archive-rose));
+}
+
+.rp-world-intro {
+  font-style: italic;
+  color: color-mix(in srgb, var(--archive-ink) 88%, var(--archive-olive));
+}
+
+.rp-thought {
+  font-style: italic;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--archive-ink-soft) 84%, transparent);
+}
+
+.rp-location {
+  font-weight: 600;
+  text-decoration: underline dotted color-mix(in srgb, var(--archive-olive) 60%, transparent);
+  text-underline-offset: 3px;
+  color: var(--archive-olive-strong);
+}
+
+.rp-time {
+  font-size: 0.85em;
+  letter-spacing: 0.02em;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--archive-ink-soft) 80%, transparent);
+}
+
+.rp-item {
+  font-weight: 600;
+  text-decoration: underline solid color-mix(in srgb, var(--archive-rose) 60%, transparent);
+  text-underline-offset: 3px;
+  color: var(--archive-rose);
+  cursor: pointer;
+}
+
+.rp-dialogue.clickable {
+  cursor: pointer;
+  transition: color 0.15s, text-shadow 0.15s;
+}
+
+.rp-dialogue.clickable:hover {
+  color: color-mix(in srgb, var(--archive-olive-strong) 88%, var(--archive-ink));
+  text-shadow: 0 0 10px color-mix(in srgb, var(--archive-gold) 22%, transparent);
+}
+
+.rp-dialogue.mechanism-trigger {
+  font-weight: 800;
+  color: color-mix(in srgb, var(--archive-olive-strong) 86%, var(--archive-ink));
+  text-shadow: 0 0 12px color-mix(in srgb, var(--archive-gold) 28%, transparent);
+}
+
+.rp-dialogue.mechanism-trigger::before {
+  content: '◆';
+  margin-right: 0.22em;
+  font-style: normal;
+  color: var(--archive-rose);
+}
+
+.rp-dialogue.mechanism-trigger::after {
+  content: ' 触发';
+  font-family: var(--font-sans);
+  font-size: 0.72em;
+  font-style: normal;
+  font-weight: 700;
+  white-space: nowrap;
+  color: var(--archive-rose);
+}
+
+.theme-dark .rp-dialogue.mechanism-trigger {
+  color: var(--archive-rose);
+}
+
+.theme-dark .rp-dialogue.clickable:hover {
+  color: var(--archive-rose);
+}
+
+.rp-item.clickable {
+  cursor: pointer;
+  transition: color 0.15s, background-color 0.15s;
+}
+
+.theme-dark .rp-item.clickable {
+  color: var(--archive-rose);
+}
+
+.rp-item.clickable:hover {
+  background-color: color-mix(in srgb, var(--archive-rose) 8%, transparent);
+}
+
+.theme-dark .rp-item.clickable:hover {
+  background-color: color-mix(in srgb, var(--archive-rose) 10%, transparent);
+}
+
+@media (max-width: 768px) {
+  .grid-2, .grid-3 {
+    grid-template-columns: 1fr;
+  }
+}

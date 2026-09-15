@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s \"http://localhost:5177/src/pages/ProseEssay.vue\")",
+      "Bash(curl -s \"http://localhost:5177/\")",
+      "Bash(curl -s http://localhost:5177/)",
+      "Bash(pkill -f \"vite\")",
+      "Bash(curl -s http://localhost:5173/)",
+      "Bash(curl -s http://localhost:5180/)",
+      "Bash(pkill -f vite)",
+      "Bash(curl -s http://localhost:5178/)",
+      "Bash(npx vue-tsc *)",
+      "Bash(curl -s http://localhost:5173/src/pages/ProseEssay.vue)",
+      "Bash(awk '/<div/{o++} /<\\\\/div>/{c++} END{print \"opens:\",o,\"closes:\",c}' /home/recoletas/jiuguan/text-game-framework/src/pages/ProseEssay.vue)",
+      "Bash(curl -s \"http://localhost:5173/src/pages/ProseEssay.vue\")",
+      "Bash(node -e \"const fs = require\\('fs'\\); const content = fs.readFileSync\\('src/pages/ProseEssay.vue', 'utf8'\\); console.log\\('File size:', content.length\\);\")",
+      "Bash(npm install *)",
+      "WebSearch",
+      "WebFetch(domain:docs.agora.world)",
+      "Bash(find /home/recoletas -name \"*.json\" 2>/dev/null | xargs grep -l \"worldbook\\\\|世界书\\\\|character_first\\\\|scenario_first\" 2>/dev/null | head -5)",
+      "Read(//home/recoletas/**)",
+      "WebFetch(domain:github.com)"
+    ]
+  },
+  "enabledPlugins": {
+    "context7@claude-plugins-official": true
+  }
+}

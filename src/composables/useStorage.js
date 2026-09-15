@@ -1,0 +1,183 @@
+import { scheduleNativeStorageMirror } from '../platform/storage/nativeStorageMirror.js'
+
+/**
+ * localStorage 键名与 schema 定义（统一入口）
+ * 版本号标注以便后续迁移
+ */
+
+export const STORAGE_KEYS = {
+  // 通用
+  QUICK_NOTE_DRAFT: 'quick_note_draft',
+  PROSE_QUICK_NOTE_DRAFT: 'prose_quick_note_draft',
+  WORLDBOOK_CREATE_DRAFT: 'worldbook_create_draft_v1',
+  WORLDBOOK_RESEARCH_SETTINGS: 'worldbook_research_settings_v1',
+  WORKSPACE_TABS: 'workspace_tabs_v1',
+
+  // 小说写作
+  WRITING_BOOKS: 'writing_books',
+  WRITING_CHARACTER: 'writing_character',
+  WRITING_TIME: 'writing_time',
+  WRITING_WORLDMAP: 'writing_worldmap',
+  WRITING_SCENES: 'writing_scenes',
+  WRITING_ACTIVITIES: 'writing_activities',
+  WRITING_CHARACTERS: 'writing_characters',
+  WRITING_TIMELINES: 'writing_timelines',
+  WRITING_WORLD_SETTINGS: 'writing_world_settings',
+  WRITING_NOTES: 'writing_notes',
+  WRITING_SESSIONS: 'writing_sessions',
+  WRITING_SNAPSHOTS: 'writing_snapshots_v1',
+  WRITING_HISTORY_PREFERENCES: 'writing_history_preferences_v1',
+  WRITING_BLOCK_HISTORY: 'writing_block_history_v1',
+  WRITING_RECOVERY_DRAFTS: 'writing_recovery_drafts_v1',
+  NARRATIVE_ASSETS: 'narrative_assets_v1',
+  MEMORY_CANDIDATES: 'memory_candidates_v1',
+  STORYBOARD_DOCUMENTS: 'storyboard_documents_v1',
+  STORYBOARD_SNAPSHOTS: 'storyboard_snapshots_v1',
+
+  // 散文随笔
+  PROSE_CARDS_V1: 'prose_cards_v1',
+  PROSE_EDGES_V1: 'prose_edges_v1',
+  PROSE_OUTLINE_V1: 'prose_outline_v1',
+  PROSE_TIMELINE_V1: 'prose_timeline_v1',
+  PROSE_PILES_V1: 'prose_piles_v1',
+  PROSE_COMMITS_V1: 'prose_commits_v1',
+  PROSE_BRANCHES_V1: 'prose_branches_v1',
+  PROSE_IMAGE_LIBRARY: 'prose_image_library',
+
+  // 诗歌工坊
+  POETRY_IDEA_TREE_V2: 'poetry_idea_tree_v2',
+  POETRY_IDEA_POSITIONS_V2: 'poetry_idea_positions_v2',
+  POETRY_ADAPT_PROFILE_V2: 'poetry_adapt_profile_v2',
+  POETRY_GRAPH_EDGES_V1: 'poetry_graph_edges_v1',
+  POETRY_IMAGERY_GROUPS_V1: 'poetry_imagery_groups_v1',
+  POETRY_SNAPSHOTS_V1: 'poetry_snapshots_v1',
+  POETRY_IMAGE_LIBRARY_V1: 'poetry_image_library_v1',
+
+  // AI 生图
+  IMAGE_MODEL_CONFIGS: 'image_model_configs',
+  VIDEO_MODEL_CONFIGS: 'video_model_configs',
+  VIDEO_MODEL_SELECTED: 'video_model_selected',
+  MEDIA_ASSETS: 'media_assets_v1',
+  COMIC_PAGES: 'comic_pages_v1',
+
+  // 文本模型配置 (配置列表 + 新增模式, 同图片/视频)
+  TEXT_MODEL_CONFIGS: 'text_model_configs',
+  TEXT_MODEL_SELECTED: 'text_model_selected',
+
+  // 可玩的世界书入口
+  PLAYABLE_WORLD_ENTRY_INTENT: 'playable_world_entry_intent_v1',
+
+  // 游戏
+  GAME_SETTINGS: 'gameSettings',
+  API_SETTINGS: 'apiSettings',
+  EXPERIENCE_READING_PROFILE: 'experience_reading_profile_v1',
+  EXPERIENCE_NARRATIVE_EXPANSION: 'experience_narrative_expansion_v1',
+  AGENT_RUNTIME_POLICY: 'pinax_agent_runtime_policy_v1',
+  AGENT_RUNTIME_METRICS: 'pinax_agent_runtime_metrics_v1',
+  NARRATIVE_PRODUCTION_METRICS: 'pinax_narrative_production_metrics_v1',
+  NARRATIVE_CRITIC_METRICS: 'pinax_narrative_critic_metrics_v1',
+
+  // 角色卡
+  CHARACTERS: 'characters',
+
+  // 偏好记忆
+  PREFERENCE_USER_ID: 'preference_user_id',
+  MEM0_SETTINGS: 'mem0_settings',
+
+  // 引导提示系统 (Phase B): 记录哪些 tip 已经被 dismiss / 永久剔除
+  PINAX_TIPS_SEEN: 'pinax_tips_seen_v1',
+
+  // Phase C3: Experience 页首次访问时间戳 (派生于 STORAGE_KEYS.EXPERIENCE_READING_PROFILE
+  // 是 string 的事实, 单独存避免冲突)
+  EXPERIENCE_FIRST_VISIT: 'pinax_experience_first_visit_v1',
+
+  // 地理与世界地图
+  GEOGRAPHY_DATA: 'geography_data',
+  WORLD_NODES: 'world_nodes'
+}
+
+export const SCHEMA = {
+  [STORAGE_KEYS.PROSE_CARDS_V1]: {
+    version: 1,
+    itemShape: {
+      id: 'string',
+      content: 'string',
+      createdAt: 'number',
+      updatedAt: 'number',
+      label: 'string',
+      extraFields: 'object|null'
+    }
+  },
+  [STORAGE_KEYS.POETRY_IDEA_TREE_V2]: {
+    version: 2,
+    itemShape: {
+      id: 'string',
+      title: 'string',
+      parentId: 'string|null',
+      children: 'array',
+      createdAt: 'number',
+      extraFields: 'object|null'
+    }
+  }
+}
+
+/**
+ * 获取存储数据，统一 parse 逻辑
+ */
+export function getItem(key) {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw ? JSON.parse(raw) : null
+  } catch (e) {
+    console.warn(`[storage] getItem failed for key: ${key}`, e)
+    return null
+  }
+}
+
+/**
+ * 设置存储数据，统一 serialize 逻辑
+ */
+export function setItem(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+    scheduleNativeStorageMirror()
+    return true
+  } catch (e) {
+    console.warn(`[storage] setItem failed for key: ${key}`, e)
+    return false
+  }
+}
+
+/**
+ * 获取原始字符串存储
+ */
+export function getTextItem(key) {
+  try {
+    return localStorage.getItem(key) || ''
+  } catch (e) {
+    console.warn(`[storage] getTextItem failed for key: ${key}`, e)
+    return ''
+  }
+}
+
+/**
+ * 设置原始字符串存储
+ */
+export function setTextItem(key, value) {
+  try {
+    localStorage.setItem(key, String(value ?? ''))
+    scheduleNativeStorageMirror()
+    return true
+  } catch (e) {
+    console.warn(`[storage] setTextItem failed for key: ${key}`, e)
+    return false
+  }
+}
+
+/**
+ * 移除存储数据
+ */
+export function removeItem(key) {
+  localStorage.removeItem(key)
+  scheduleNativeStorageMirror()
+}

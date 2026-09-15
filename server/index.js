@@ -1,0 +1,160 @@
+import './loadEnv.js' // 最先执行: 加载 server/.env 到 process.env
+import express from 'express'
+import cors from 'cors'
+import { createServer } from 'node:http'
+import { WebSocketServer } from 'ws'
+import { fileURLToPath } from 'url'
+import { dirname, join, resolve } from 'path'
+import gameRouter from './routes/game.js'
+import eventsRouter from './routes/events.js'
+import configRouter from './routes/config.js'
+import chatRouter from './routes/chat.js'
+import generateRouter from './routes/generate.js'
+import preferencesRouter from './routes/preferences.js'
+import advisorRouter from './routes/advisor.js'
+import openclawRouter from './routes/openclaw.js'
+import roomsRouter from './routes/rooms.js'
+import createMediaRouter from './routes/media.js'
+import createImageRouter from './routes/image.js'
+import researchRouter from './routes/research.js'
+import { createCollaborationRouter } from './routes/collaboration.js'
+import { setupWebSocket } from './realtime/wsHandler.js'
+import { isCollaborationUpgradeOriginAllowed, setupCollaborationRelay } from './realtime/v2/relayHandler.js'
+import { CollaborationRateLimiter } from './realtime/v2/security.js'
+import { createCollaborationMaintenanceScheduler } from './realtime/v2/maintenanceScheduler.js'
+import { SqliteCollaborationRepository } from './repositories/collaboration/SqliteCollaborationRepository.js'
+import { COLLABORATION_LIMITS } from '../shared/collaboration/constants.js'
+import { startCleanupInterval, stopCleanupInterval } from './realtime/RoomRegistry.js'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+
+const app = express()
+const PORT = process.env.PORT || 3001
+const collaborationEnabled = process.env.COLLABORATION_V2_ENABLED === 'true'
+let collaborationRepository = null
+let collaborationRelay = null
+const collaborationAllowedOrigins = String(process.env.COLLABORATION_ALLOWED_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean)
+if (collaborationEnabled) {
+  const filename = process.env.COLLABORATION_SQLITE_PATH
+  const secretPepper = process.env.COLLABORATION_SECRET_PEPPER
+  if (!filename || !secretPepper) throw new Error('collaboration-v2-requires-sqlite-path-and-secret-pepper')
+  collaborationRepository = new SqliteCollaborationRepository({ filename, secretPepper })
+}
+
+process.on('uncaughtException', (error) => {
+  console.error('[Server] uncaughtException:', error)
+})
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[Server] unhandledRejection:', reason)
+})
+
+app.use(cors())
+if (collaborationRepository) app.use('/api/collaboration', createCollaborationRouter({
+  repository: collaborationRepository,
+  allowedOrigins: collaborationAllowedOrigins,
+  onMembersInvalidated: result => collaborationRelay?.invalidateMembers(result)
+}))
+app.use(express.json({ limit: '16mb' }))
+
+const mediaRouter = createMediaRouter()
+const imageRouter = createImageRouter()
+app.use(roomsRouter)
+app.use('/api/game', gameRouter)
+app.use('/api/events', eventsRouter)
+app.use('/api/config', configRouter)
+app.use('/api/chat', chatRouter)
+app.use('/api/generate', generateRouter)
+app.use('/api/preferences', preferencesRouter)
+app.use('/api/advisor', advisorRouter)
+app.use('/api/openclaw', openclawRouter)
+app.use('/api/research', researchRouter)
+app.use(mediaRouter)
+app.use(imageRouter)
+
+app.use(express.static(join(__dirname, '../dist')))
+
+// 用户手册静态资源 — DocsViewer 通过 /docs/user-manual/manifest.json 拿章节清单,
+// 通过 /docs/user-manual/<file>.md 拿章节正文。maxAge 5min + ETag 让前端可缓存。
+app.use(
+  '/docs/user-manual',
+  express.static(join(__dirname, '../docs/user-manual'), {
+    maxAge: '5m',
+    etag: true,
+    fallthrough: true,
+    setHeaders(res) {
+      // 让 manifest.json 也走缓存, 但避免被 CDN / 浏览器长期钉死
+      res.setHeader('Cache-Control', 'public, max-age=300')
+    }
+  })
+)
+
+// SPA fallback for Vue Router history mode — must come after /api routes
+app.use(/^\/(?!api\/|ws\/).*/, (req, res) => {
+  res.sendFile(join(__dirname, '../dist/index.html'))
+})
+
+const server = createServer(app)
+
+const wss = new WebSocketServer({ noServer: true })
+setupWebSocket(wss)
+const collaborationWss = collaborationEnabled ? new WebSocketServer({ noServer: true, maxPayload: COLLABORATION_LIMITS.wsMaxPayloadBytes }) : null
+collaborationRelay = collaborationWss ? setupCollaborationRelay(collaborationWss, { repository: collaborationRepository, rateLimiter: new CollaborationRateLimiter() }) : null
+const collaborationMaintenance = collaborationRepository ? createCollaborationMaintenanceScheduler({
+  repository: collaborationRepository,
+  onRoomEvents: (roomId, events) => collaborationRelay?.broadcastEvents(roomId, events),
+  onMembersInvalidated: result => collaborationRelay?.invalidateMembers(result),
+  onRoomsInvalidated: roomIds => collaborationRelay?.invalidateRooms(roomIds),
+  onSweepConnections: () => collaborationRelay?.sweepInactiveConnections()
+}) : null
+
+server.on('upgrade', (request, socket, head) => {
+  const url = new URL(request.url, 'http://localhost')
+  if (url.pathname === '/ws/collaboration' && collaborationWss) {
+    if (!isCollaborationUpgradeOriginAllowed(request, collaborationAllowedOrigins)) return socket.destroy()
+    collaborationWss.handleUpgrade(request, socket, head, (ws) => collaborationWss.emit('connection', ws, request))
+  } else if (url.pathname.startsWith('/ws/rooms')) {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request)
+    })
+  } else {
+    socket.destroy()
+  }
+})
+
+export function startServer(port = PORT) {
+  if (server.listening) return server
+  startCleanupInterval()
+  collaborationMaintenance?.start()
+  server.listen(port, () => {
+    console.log(`Server running on http://localhost:${port}`)
+  })
+  return server
+}
+
+export async function stopServer() {
+  stopCleanupInterval()
+  collaborationMaintenance?.stop()
+  mediaRouter.mediaRuntime?.shutdown?.()
+  for (const client of wss.clients) client.terminate()
+  collaborationRelay?.close()
+  await new Promise((resolveClose) => {
+    if (!server.listening) return resolveClose()
+    server.close(() => resolveClose())
+  })
+  collaborationRepository?.close()
+}
+
+const isDirectRun = process.argv[1] && resolve(process.argv[1]) === resolve(__filename)
+if (isDirectRun) {
+  startServer()
+  const shutdown = async (signal) => {
+    console.warn(`[Server] received ${signal}, shutting down`)
+    await stopServer()
+  }
+  process.once('SIGTERM', () => { void shutdown('SIGTERM') })
+  process.once('SIGINT', () => { void shutdown('SIGINT') })
+}
+
+export { app, server, wss, collaborationWss, collaborationRepository, collaborationMaintenance, mediaRouter }
